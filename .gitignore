@@ -21,3 +21,5 @@ settings.json
 # Alembic migrations
 alembic/
 alembic.ini
+
+*.egg-info/
