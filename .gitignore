@@ -1,0 +1,23 @@
+# VS Code settings
+.vscode/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Env files
+.env
+.env/
+
+# Database files
+*.db
+FMS_DataStructure.db
+
+# JSON files
+*.json
+settings.json
+
+# Alembic migrations
+alembic/
+alembic.ini
