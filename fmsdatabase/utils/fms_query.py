@@ -604,8 +604,8 @@ class FMSQuery:
         plt.title(title, wrap=True)
         plot_output = widgets.Output()
         data_widget = widgets.HBox([plot_output, df_widget], layout=widgets.Layout(align_items='center', gap='20px'))
-        display(data_widget)
         if plot:
+            display(data_widget)
             with plot_output:
                 plt.show()
         else:
@@ -814,9 +814,10 @@ class FMSQuery:
                             self.check_tv_slope(**flow_power_slope, correction = correction, serial = self.fms_entry.fms_id)
 
                 correction_checkbox.observe(on_correction_change, names='value')
-                display(correction_checkbox)
-                display(plot_output)
-                on_correction_change({})
+                if plot:
+                    display(correction_checkbox)
+                    display(plot_output)
+                    on_correction_change({})
                 return image
 
     def get_flow_power_slope(self, flows: list[float], powers: list[float], num_points: int = 300) -> dict:
@@ -1009,7 +1010,7 @@ class FMSQuery:
             buf.seek(0)
             return buf
         
-    def closed_loop_test_query(self, test_id: str, plot: bool =True) -> io.BytesIO | None:
+    def closed_loop_test_query(self, test_id: str, plot: bool =True, show_response_times: bool = False) -> io.BytesIO | None:
         """
         Query and plot closed loop test data for the given test ID.
         Args:
@@ -1038,7 +1039,7 @@ class FMSQuery:
             test_info = []
 
             show_response_times_checkbox = widgets.Checkbox(
-                value = False,
+                value = show_response_times,
                 description = 'Show Response Times:',
                 indent = False,
                 label_width = '150px'
@@ -1158,10 +1159,11 @@ class FMSQuery:
                     FMSFlowTestParameters.TOTAL_FLOW.value: get_unit(FMSFlowTestParameters.TOTAL_FLOW.value),
                 }
 
-                form = widgets.VBox([show_response_times_checkbox, widgets.HBox([plot_output, widgets.HBox(layout = widgets.Layout(width = "50px")), df_widget], 
-                                layout=widgets.Layout(align_items='center', spacing='20px')), tv_plot_output], layout=widgets.Layout(padding='12px', width='fit-content'))
-                display(form) 
-                image = self.plot_closed_loop(serial=self.fms_entry.fms_id, gas_type=self.gas_type, plot=plot, plot_output = plot_output, tv_plot_output = tv_plot_output)
+                if plot:
+                    form = widgets.VBox([show_response_times_checkbox, widgets.HBox([plot_output, widgets.HBox(layout = widgets.Layout(width = "50px")), df_widget], 
+                                    layout=widgets.Layout(align_items='center', spacing='20px')), tv_plot_output], layout=widgets.Layout(padding='12px', width='fit-content'))
+                    display(form) 
+                image = self.plot_closed_loop(serial=self.fms_entry.fms_id, gas_type=self.gas_type, plot=plot, plot_output = plot_output, tv_plot_output = tv_plot_output, show_response_times=show_response_times)
 
                 def on_checkbox_clicked(change):
                     show_response_times = show_response_times_checkbox.value

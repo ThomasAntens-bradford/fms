@@ -34,13 +34,10 @@ from .utils.general_utils import TVParts, load_from_json, save_to_json
 # Local packages – queries and processing
 from .utils.fms_query import FMSQuery
 from .utils.certification_listener import CertificationListener
-from .utils.tv_assembly import TVAssembly
 from .utils.hpiv_query import HPIVQuery
 from .utils.tv_query import TVQuery
 from .utils.manifold_query import ManifoldQuery
 from .utils.textract import TextractReader
-from .utils.fms_testing import FMSTesting
-from .utils.tv_assembly import TVAssembly
 
 
 #pip install sqlalchemy tqdm networkx openpyxl chardet pymupdf docxtpl docx2pdf soupsieve pytesseract pdf2image opencv-python ipywidgets ipyvuetify tzlocal streamlit watchdog flask requests
@@ -312,27 +309,6 @@ class FMSDataStructure:
         """
         query = HPIVQuery(session=self.Session(), **specification_dict)
         query.hpiv_query_field()
-
-    def tv_assembly(self, word_path: str = "TVAssemblyProcedure\\tv_assembly_procedure.docx", main_path: str = "TVAssemblyProcedure"):
-        """
-        Create and start a TVAssembly instance.
-        Args:
-            word_path (str): Path to the Word template for TV assembly.
-            main_path (str): Main path for TV assembly files.    
-        """
-        assembly = TVAssembly(session=self.Session(), fms=self, word_template_path=word_path, main_path=main_path)
-        assembly.start_assembly()
-
-    def fms_acceptance_testing(self, word_template_path: str = r"FMSAcceptanceTests\fms_test_draft.docx",  
-                 save_path: str = r"\\be.local\Doc\DocWork\99999 - FMS industrialisation\40 - Engineering\03 - Data flow\FMS Acceptance Test Reports"):
-        """
-        Create and start an FMSTesting instance.    
-        Args:
-            word_template_path (str): Path to the Word template for FMS acceptance testing.
-            save_path (str): Path to save the generated test reports.
-        """
-        testing = FMSTesting(session=self.Session(), fms=self, word_template_path=word_template_path, save_path=save_path)
-        testing.start_testing()
 
     def listen_to_certifications(self, certifications: str = "") -> None:
         """
@@ -1132,7 +1108,7 @@ class FMSDataStructure:
             if script_entry:
                 return script_entry.script
             else:
-                print(f"No procedure found with name: {procedure_name} and version: {version}")
+                # print(f"No procedure found with name: {procedure_name} and version: {version}")
                 return None
         except Exception as e:
             print(f"Error loading procedure {procedure_name}: {str(e)}")
