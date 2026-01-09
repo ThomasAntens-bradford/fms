@@ -235,7 +235,7 @@ class FMSQuery:
 
         # --- Widgets ---
         fms_ids: list[str] = [f.fms_id for f in self.session.query(FMSMain).all()]
-        fms_ids = sorted(fms_ids, key=lambda x: (int(x.split('-')[0]), int(x.split('-')[1].zfill(4))))
+        fms_ids = sorted(fms_ids, key=lambda x: (int(x.split('-')[0]), int(x.split('-')[1].zfill(4))), reverse = True)
 
         fms_field = widgets.Dropdown(
             options=fms_ids,

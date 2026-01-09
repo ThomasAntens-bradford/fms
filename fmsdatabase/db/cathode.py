@@ -15,6 +15,8 @@ class CathodeFR(Base):
         Primary Key, unique Flow Restrictor ID.
     set_id : String
         Foreign Key, Manifold Set ID (references the main manifold table).
+    drawing : String
+        String describing the drawing identifier of the FR.
     thickness : Float
         Thickness in mm.
     temperature : Float
@@ -46,6 +48,12 @@ class CathodeFR(Base):
         FMS to which this restrictor is allocated.
     testing_completed : Boolean
         Whether testing has been completed.
+    operator : String
+        Operator who conducted the testing.
+    trs_reference : String
+        TRS reference document identifier.
+    tools : JSON
+        List of components used to test the FR.
 
     Relationships
     -------------
@@ -58,6 +66,7 @@ class CathodeFR(Base):
 
     fr_id = Column(String(50), primary_key=True, unique=True, nullable=False)
     set_id = Column(String(50), ForeignKey('manifold_status.set_id'), nullable=True, unique=True) 
+    drawing = Column(String(50), nullable=True)
     thickness = Column(Float, nullable=True)
     temperature = Column(Float, nullable=True)
     orifice_diameter = Column(Float, nullable=True)
@@ -73,6 +82,9 @@ class CathodeFR(Base):
     gas_type = Column(String(50), nullable=True)
     allocated = Column(String(50), nullable=True)
     testing_completed = Column(Boolean, default=False)
+    operator = Column(String(50), nullable=True)
+    trs_reference = Column(String(100), nullable=True)
+    tools = Column(JSON, nullable=True)
 
     certification = relationship("FRCertification", back_populates="cathode_fr")
     manifold = relationship("ManifoldStatus", back_populates="cathode")

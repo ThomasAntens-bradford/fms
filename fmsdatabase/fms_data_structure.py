@@ -6,6 +6,7 @@ import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
+import subprocess
 
 # Third-party
 import fitz
@@ -45,14 +46,14 @@ from .utils.textract import TextractReader
 #TODO safran p/n
 #TODO capture point in MAIT for fms flow testing, discussion
 #TODO think about piece parts batch traceability
-#TODO tools and test operator for TV
+#TODO tools and test operator for TV and FR
 
 #TODO thermal valve measurement report, extract measurements
 #TODO add 'dashboard' especially showing what data has come in and any errors regarding the processing
 #TODO maybe add table for tolerances, from the drawings
 #TODO session start logic, make robust against connectivity issues
 #TODO allocation queries
-#TODO tv test input field tv id selection not disabled
+#TODO None options queries to reset
 
 class FMSDataStructure:
     """
@@ -195,10 +196,9 @@ class FMSDataStructure:
             app_data_dir = local_appdata / "FMSDatabase"
             app_data_dir.mkdir(parents=True, exist_ok=True)
             self.db_path = app_data_dir / "FMS_DataStructure.db"
-
             # Initialize the engine
             self.engine = create_engine(f"sqlite:///{self.db_path}")
-        Base.metadata.create_all(self.engine)
+
         self.Session = sessionmaker(bind=self.engine)
         self.default_manifold_drawing = "20025.10.08-R4"    
         self.excel_extraction = excel_extraction
@@ -243,6 +243,36 @@ class FMSDataStructure:
         self.hpiv_found = False
 
         self.certification_listener = None
+
+        operator_check = load_from_json("operator")
+        if operator_check:
+            self.operator = operator_check.get("operator", "")
+            self.author = operator_check.get("author", "")
+        else:
+            username = subprocess.check_output(
+                ["powershell", "-Command", "(Get-WmiObject Win32_UserAccount -Filter \"Name='$env:USERNAME'\").FullName"],
+                text=True
+            ).strip()
+            name_parts = username.split(' ')
+            first_name = name_parts[0] if len(name_parts) > 0 else ""
+            last_name = name_parts[-1] if len(name_parts) > 1 else ""
+            try:
+                self.author = first_name[0].upper() + "." + last_name.capitalize()
+            except Exception as e:
+                self.author = "T.Antens"
+            try:
+                self.operator = first_name[0].upper() + last_name[0].upper() + last_name[-1].upper()
+            except Exception as e:
+                self.operator = "TAS"
+            save_to_json({"operator": self.operator, "author": self.author}, "operator")
+
+    def initialize_database(self) -> None:
+        """
+        Initialize the database by creating all tables defined in the metadata.
+        """
+        if not self.engine:
+            raise ValueError("Database engine is not initialized.")
+        Base.metadata.create_all(self.engine)
 
     def print_table_structures(self) -> None:
         """
@@ -412,9 +442,10 @@ class FMSDataStructure:
         if not anode_fr_path and not cathode_fr_path:
             anode_paths = [self.anode_fr_path, r"\\be.local\Doc\DocWork\20025 - CHEOPS2 Low Power\70 - Testing\LP FMS FR Testing - 8\XXX - FR Testing - Anode.xlsx"]
             cathode_paths = [self.cathode_fr_path, r"\\be.local\Doc\DocWork\20025 - CHEOPS2 Low Power\70 - Testing\LP FMS FR Testing - 8\XXX - FR Testing - Cathode.xlsx"]
+            operator = ["JKR", "NRN"]
             
-            for anode_path, cathode_path in zip(anode_paths, cathode_paths):
-                self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_path, cathode_path=cathode_path)
+            for anode_path, cathode_path, tester in zip(anode_paths, cathode_paths, operator):
+                self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_path, cathode_path=cathode_path, operator = tester)
         else:
             self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_fr_path, cathode_path=cathode_fr_path)
 
@@ -1103,7 +1134,7 @@ class FMSDataStructure:
         """
         session = self.Session()
         try:
-            script_entry = session.query(FMSProcedures).filter_by(script_name=procedure_name).first() \
+            script_entry = session.query(FMSProcedures).filter_by(script_name=procedure_name).order_by(FMSProcedures.script_id.desc()).first() \
                 if version is None else session.query(FMSProcedures).filter_by(script_name=procedure_name, version=version).first()
             if script_entry:
                 return script_entry.script
@@ -1189,7 +1220,7 @@ class FMSDataStructure:
             limit (int, optional): Maximum number of records to print. Defaults to None (print all).
         """
         session = None
-        return
+        # return
         try:
             session = self.Session()
             query = session.query(table_class)
@@ -1230,7 +1261,7 @@ if __name__ == "__main__":
     fms = FMSDataStructure(excel_extraction=True)
     # wb = openpyxl.load_workbook(fms.cathode_fr_path)
     # print(wb.sheetnames)
-    fms.get_all_current_data()
+    # fms.get_all_current_data()
     # fms.fms_sql.update_limit_database()
     # fms.print_table(AnodeFR, limit=5)
     # fms.print_table(CathodeFR, limit=5)

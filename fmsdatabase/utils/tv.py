@@ -1820,7 +1820,6 @@ class TVLogicSQL:
                     results[key].append(value)
             current_test_date = self.test_id_to_datetime(self.test_reference)
             existing_cycles = session.query(TVTvac).filter_by(tv_id=self.tv_id, cycles=self.cycle_amount).first()
-            print(existing_cycles)
             if existing_cycles:
                 test_date = self.test_id_to_datetime(existing_cycles.test_id)
                 if current_test_date > test_date:

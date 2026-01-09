@@ -525,11 +525,12 @@ def list_json_files() -> list:
     Returns:
         list: List of JSON file names without extension.
     """
-    if not os.path.exists('json_cache'):
-        os.makedirs('json_cache')
-    return [f for f in os.listdir('json_cache') if f.endswith('.json')]
+    json_cache_dir = os.path.join(os.getenv('APPDATA'), 'json_cache')
+    if not os.path.exists(json_cache_dir):
+        os.makedirs(json_cache_dir)
+    return [f for f in os.listdir(json_cache_dir) if f.endswith('.json')]
 
-def load_from_json(file_name: str) -> dict[str, Any]:
+def load_from_json(file_name: str, directory: str = "app_data") -> dict[str, Any]:
     """
     Load data from a JSON file.
     
@@ -539,17 +540,26 @@ def load_from_json(file_name: str) -> dict[str, Any]:
     Returns:
         dict: Parsed JSON data.
     """
-    package_dir = os.path.dirname(os.path.dirname(__file__))
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if directory == "appdata":
+        json_cache_dir = os.path.join(os.getenv('APPDATA'), 'json_cache')
+    else:
+        json_cache_dir = os.path.join(base_dir, directory)
+
+    if not os.path.exists(json_cache_dir):
+        os.makedirs(json_cache_dir)
+
     if not file_name.endswith('.json'):
         file_name += '.json'
 
-    file_path = os.path.join(package_dir, "json_cache", file_name)
+    file_path = os.path.join(json_cache_dir, file_name)
     try:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File {file_path} does not exist.")
         with open(file_path, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except Exception as e:
+    except Exception:
         return {}
 
 def save_to_json(data: dict[str, Any], file_name: str) -> None:
@@ -560,8 +570,10 @@ def save_to_json(data: dict[str, Any], file_name: str) -> None:
         data (dict): Data to save.
         file_name (str): Path to the JSON file.
     """
-    package_dir = os.path.dirname(os.path.dirname(__file__))
-    json_cache_dir = os.path.join(package_dir, "json_cache")
+    json_cache_dir = os.path.join(os.getenv('APPDATA'), 'json_cache')
+    if not os.path.exists(json_cache_dir):
+        os.makedirs(json_cache_dir)
+    
     file_name = os.path.join(json_cache_dir, file_name if file_name.endswith('.json') else f"{file_name}.json")
     with open(file_name, 'w') as f:
         json.dump(data, f, indent=4)
@@ -573,8 +585,7 @@ def delete_json_file(file_name: str) -> None:
     Args:
         file_name (str): Path to the JSON file.
     """
-    package_dir = os.path.dirname(os.path.dirname(__file__))
-    json_cache_dir = os.path.join(package_dir, "json_cache")
+    json_cache_dir = os.path.join(os.getenv('APPDATA'), 'json_cache')
     file_name = os.path.join(json_cache_dir, file_name if file_name.endswith('.json') else f"{file_name}.json")
     if os.path.exists(file_name):
         os.remove(file_name)
@@ -778,7 +789,7 @@ def linear_regression(X: np.ndarray | list, y: np.ndarray | list) -> tuple:
     intercept = model.intercept_
     return model, y_pred, coef, intercept
 
-def show_modal_popup(message: str, continue_action: callable) -> None:
+def show_modal_popup(message: str, continue_action: callable, cancel_action: callable = None) -> None:
     """
     Display a modal popup that floats above all other widgets.
     continue_action: function executed when 'Continue Anyway' is clicked.
@@ -805,6 +816,8 @@ def show_modal_popup(message: str, continue_action: callable) -> None:
     # Button handlers
     def on_cancel(widget, event, data):
         dialog.v_model = False
+        if cancel_action is not None:
+            cancel_action()
 
     def on_continue(widget, event, data):
         dialog.v_model = False

@@ -11,6 +11,7 @@ from sklearn.linear_model import LinearRegression
 import numpy as np
 from scipy.stats import norm
 from sqlalchemy import func
+import io
 
 # Local imports
 from .general_utils import display_df_in_chunks, LimitStatus, LPTCoefficientParameters
@@ -278,7 +279,7 @@ class ManifoldQuery:
             style={'description_width': '80px'},
             value=self.set_id if self.set_id else None,
             disabled=True if self.set_id else False,
-            options=sorted([m.set_id for m in self.all_sets]) if not self.set_id else [self.set_id]
+            options=sorted([m.set_id for m in self.all_sets], reverse=True) if not self.set_id else [self.set_id]
         )
 
         query_field = widgets.Dropdown(
@@ -368,7 +369,7 @@ class ManifoldQuery:
             elif choice in ('Anode FR', 'Cathode FR'):
                 self.anode = (choice == 'Anode FR')  # Set self.anode correctly
                 self.all_frs = self.session.query(AnodeFR if self.anode else CathodeFR).all()
-                serial_field.options = [fr.fr_id for fr in self.all_frs if fr.fr_id] 
+                serial_field.options = sorted([fr.fr_id for fr in self.all_frs if fr.fr_id], key = lambda x: int(x.split("-")[-1]), reverse=True)
                 fr: AnodeFR | CathodeFR = self.manifold.anode[0] if self.anode and self.manifold and self.manifold.anode else \
                         (self.manifold.cathode[0] if not self.anode and self.manifold and self.manifold.cathode else None)
                 serial_field.value = None if not self.manifold else (fr.fr_id if fr else None)
@@ -518,7 +519,7 @@ class ManifoldQuery:
                     print("Remark Submitted!")
                     with self.output:
                         self.output.clear_output()
-                        self.fr_status()
+                        self.fr_status(fr_id = fr_entry.fr_id)
                 
         submit_button.on_click(on_submit_clicked)
 
@@ -558,9 +559,14 @@ class ManifoldQuery:
             cathode_fr_entry = self.session.query(CathodeFR).filter_by(fr_id=fr_id).all() if not self.anode else None
 
         self.fr_remark_field(fr_entry)
-        columns = [c.name for c in fr_entry.__table__.columns if c.name not in ('pressures', 'flow_rates', 'pressure_drop')]
+        columns = [c.name for c in fr_entry.__table__.columns if c.name not in ('pressures', 'flow_rates', 'pressure_drop', 'tools')]
         values = [round(getattr(fr_entry, c), 3) if isinstance(getattr(fr_entry, c), (float, int)) else getattr(fr_entry, c) for c in columns]
         df = pd.DataFrame({"Field": columns, "Value": values})
+
+        tools: list[dict] = fr_entry.tools
+        tools_for_df = [{key.replace("_", " ").title(): value for key, value in i.items() if key != 'type'} for i in tools]
+
+        tools_df = pd.DataFrame(tools_for_df)
 
         def style_value(val, row):
             col_name = row['Field']
@@ -575,6 +581,8 @@ class ManifoldQuery:
         )
 
         display(styled_df)
+        display(widgets.HTML(f"<h2>Tools used for testing FR {fr_entry.fr_id}</h2>"))
+        display(tools_df.style.hide(axis='index'))
 
         anode_fr_entry = anode_fr_entry[0] if anode_fr_entry else None
         cathode_fr_entry = cathode_fr_entry[0] if cathode_fr_entry else None
@@ -592,17 +600,20 @@ class ManifoldQuery:
 
     def plot_fr_results(self, fr_entry: AnodeFR | CathodeFR, fr_type: str) -> None:
         """
-        Plot flow rate and pressure drop results side by side for a given FR entry.
-        Left panel: Flow rate vs pressure
-        Right panel: Pressure drop vs pressure
+        Plot flow rate and pressure drop results for a given FR entry.
+        If pressure drops are available, show two subplots side by side.
+        Otherwise, show a single flow rate plot.
         """
         gas_type = fr_entry.gas_type
-        if self.manifold:
-            ratio_spec = self.manifold.ac_ratio_specified
-        else:
-            ratio_spec = 13
+        ratio_spec = self.manifold.ac_ratio_specified if self.manifold else 13
 
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6), sharey=False)
+        has_pressure_drops = bool((self.anode_pressure_drops or self.cathode_pressure_drops))
+
+        if has_pressure_drops:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6), sharey=False)
+        else:
+            fig, ax1 = plt.subplots(figsize=(8, 6))
+            ax2 = None  # no second axis
 
         # --- LEFT PANEL: Flow vs Pressure ---
         if self.anode_flows and self.cathode_flows:
@@ -631,11 +642,12 @@ class ManifoldQuery:
             ax1_ratio.axhline(y=ratio_spec+0.5, color='r', linestyle='-', label=f'Ratio Tolerance: {ratio_spec}')
             ax1_ratio.axhline(y=ratio_spec-0.5, color='r', linestyle='-')
             ax1_ratio.set_ylabel('Anode/Cathode Ratio')
+            ax1_ratio.set_ylim(ratio_spec - 3, ratio_spec + 3)
 
             # Combine legends
             lines, labels = ax1.get_legend_handles_labels()
             lines2, labels2 = ax1_ratio.get_legend_handles_labels()
-            ax1.legend(lines + lines2, labels + labels2, loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=2)
+            ax1.legend(lines + lines2, labels + labels2, loc='lower center', bbox_to_anchor=(0.5, -0.35), ncol=2)
         else:
             flows = self.anode_flows if self.anode_flows else self.cathode_flows
             pressures = self.anode_pressures if self.anode_flows else self.cathode_pressures
@@ -648,45 +660,51 @@ class ManifoldQuery:
             ax1.set_xlabel('Pressure [bar]')
             ax1.set_ylabel(f'Flow Rate [mg/s {gas_type}]')
             ax1.grid(True)
-            ax1.legend(loc='best')
+            ax1.legend(loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=2)
 
-        ax1.set_title(f'Flow Rate vs Pressure')
+        ax1.set_title('Flow Rate vs Pressure')
 
         # --- RIGHT PANEL: Pressure Drop vs Pressure ---
-        if self.anode_pressure_drops and self.cathode_pressure_drops:
-            ax2.plot(
-                self.anode_pressures, self.anode_pressure_drops,
-                linestyle='--', color='tab:blue',
-                label='Anode Pressure Drop [Pa]'
-            )
-            ax2.plot(
-                self.cathode_pressures, self.cathode_pressure_drops,
-                linestyle='--', color='tab:orange',
-                label='Cathode Pressure Drop [Pa]'
-            )
-            ax2.set_yticks(np.arange(0, max(max(self.anode_pressure_drops), max(self.cathode_pressure_drops)) + 10, 10))
-        else:
-            pressure_drops = self.anode_pressure_drops if self.anode_pressure_drops else self.cathode_pressure_drops
-            pressures = self.anode_pressures if self.anode_pressure_drops else self.cathode_pressures
-            label = 'Anode' if self.anode_pressure_drops else 'Cathode'
-            ax2.plot(
-                pressures, pressure_drops,
-                linestyle=':', color='tab:blue',
-                label=f'{label} Pressure Drop [Pa]'
-            )
-            step_size = 2 if self.anode_pressure_drops else 10
-            ax2.set_yticks(np.arange(0, max(pressure_drops) + step_size, step_size))
+        if has_pressure_drops and ax2:
+            if self.anode_pressure_drops and self.cathode_pressure_drops:
+                ax2.plot(
+                    self.anode_pressures, self.anode_pressure_drops,
+                    linestyle='--', color='tab:blue',
+                    label='Anode Pressure Drop [Pa]'
+                )
+                ax2.plot(
+                    self.cathode_pressures, self.cathode_pressure_drops,
+                    linestyle='--', color='tab:orange',
+                    label='Cathode Pressure Drop [Pa]'
+                )
+                ax2.set_yticks(np.arange(0, max(max(self.anode_pressure_drops), max(self.cathode_pressure_drops)) + 10, 10))
+            else:
+                pressure_drops = self.anode_pressure_drops if self.anode_pressure_drops else self.cathode_pressure_drops
+                pressures = self.anode_pressures if self.anode_pressure_drops else self.cathode_pressures
+                label = 'Anode' if self.anode_pressure_drops else 'Cathode'
+                if pressure_drops:
+                    ax2.plot(
+                        pressures, pressure_drops,
+                        linestyle=':', color='tab:blue',
+                        label=f'{label} Pressure Drop [Pa]'
+                    )
+                    step_size = 2 if self.anode_pressure_drops else 10
+                    ax2.set_yticks(np.arange(0, max(pressure_drops) + step_size, step_size))
+            ax2.set_xlabel('Pressure [bar]')
+            ax2.set_ylabel('Pressure Drop [Pa]')
+            ax2.grid(True)
+            ax2.legend(loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=2)
 
-        ax2.set_xlabel('Pressure [bar]')
-        ax2.set_ylabel('Pressure Drop [Pa]')
-        ax2.grid(True)
-        ax2.legend(loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=2)
-        ax2.set_title(f'Pressure Drop vs Pressure')
+            ax2.set_title('Pressure Drop vs Pressure')
 
         # --- FIGURE TITLE ---
-        fig.suptitle(f'Flow Rate and Pressure Drop {gas_type} in {fr_type} {fr_entry.fr_id}, Temperature: {fr_entry.temperature} [°C]', fontsize=14)
+        fig.suptitle(
+            f'Flow Rate and Pressure Drop {gas_type} in {fr_type} {fr_entry.fr_id}, '
+            f'Temperature: {fr_entry.temperature} [°C]', fontsize=14
+        )
         fig.tight_layout(rect=[0, 0, 1, 0.95])
         plt.show()
+
 
     def fr_certification_field(self, fr_id: str = None) -> None:
         """
@@ -720,12 +738,12 @@ class ManifoldQuery:
             else self.fr_current_certification + " (Current)" for i in self.all_frs]
         ))
 
-        certification_field = widgets.Dropdown(
+        certification_field = widgets.SelectMultiple(
             options=['all'] + self.all_fr_certifications,
             description='Select Certification:',
             layout=widgets.Layout(width='350px'),
             style={'description_width': '150px'},
-            value='all'
+            value=('all',)
         )
 
         analysis_type = widgets.Dropdown(
@@ -760,8 +778,15 @@ class ManifoldQuery:
 
         def get_flow_callable(flow_type: str) -> callable | None:
             if flow_type == 'Flow vs Orifice':
+                certifications = certification_field.value
+                if certifications:
+                    certifications = [i.replace(" (Current)", "") for i in certifications]
+                    if "all" in certifications:
+                        certifications = "all"
+                else:
+                    certifications = "all"
                 return lambda: self.fr_flow_analysis(
-                    certification_field.value.replace(' (Current)', '') if certification_field.value else 'all',
+                    certifications,
                     fr_entry,
                     fr_type,
                     show_errors.value
@@ -784,18 +809,24 @@ class ManifoldQuery:
                     func()
 
         def run_analysis() -> None:
-            certification = certification_field.value.replace(' (Current)', '') if certification_field.value else 'all'
+            certifications = certification_field.value
+            if certifications:
+                certifications = [i.replace(" (Current)", "") for i in certifications]
+                if "all" in certifications:
+                    certifications = "all"
+            else:
+                certifications = "all"
             with output:
                 output.clear_output()
                 if analysis_type.value == 'Dimensional Analysis':
                     display(histogram_toggle)
-                    self.fr_trend_analysis(certification, fr_entry, fr_type, histogram_toggle.value)
+                    self.fr_trend_analysis(certifications, fr_entry, fr_type, histogram_toggle.value)
                 elif analysis_type.value == 'Flow Analysis':
                     flow_form = widgets.VBox([flow_type_analysis, show_errors])
                     display(flow_form)
                     run_flow_analysis()
                 elif analysis_type.value == 'Correlation Analysis':
-                    self.fr_correlation_analysis(certification, fr_entry, fr_type)
+                    self.fr_correlation_analysis(certifications, fr_entry, fr_type)
 
         # Observers
         certification_field.observe(lambda change: run_analysis(), names='value')
@@ -1048,7 +1079,7 @@ class ManifoldQuery:
         cathode_reference_orifice = self.cathode_reference_orifice 
         reference_thickness = self.ref_thickness
 
-        plt.figure(figsize=(18, 8))
+        plt.figure(figsize=(18, 6))
         
         for idx, (anode_data, cathode_data, label, val, ref_anode, ref_cathode, spec_min, spec_max) in enumerate([
             (anode_thicknesses, cathode_thicknesses, 'Thickness', thickness, reference_thickness, reference_thickness,\
@@ -1100,45 +1131,51 @@ class ManifoldQuery:
         plt.tight_layout()
         plt.show()
 
-    def fr_flow_analysis(self, certification: str, fr_entry: AnodeFR | CathodeFR, fr_type: str, error: bool = False, \
-                         plot: bool = True, correction: bool = False) -> list[tuple]:
-        """
-        Perform flow analysis on FRs, plotting flow rate vs orifice diameter.
-        Fits linear regression models to flow data at specified pressures and plots results.
-        Args:
-            certification (str): Certification batch to analyze ('all' for all batches).
-            fr_entry (AnodeFR | CathodeFR): Specific FR entry to highlight in the
-                analysis (can be None).
-            fr_type (str): Type of FR ('Anode' or 'Cathode').
-            error (bool): Whether to include error bars in the plot.
-            plot (bool): Whether to generate plots.
-            correction (bool): Whether to use corrected FR lists.
-        Returns:
-            list[tuple]: List of tuples containing regression models and statistics for each pressure.
-        """
+    def fr_flow_analysis(self, certification: str | list[str], fr_entry: AnodeFR | CathodeFR, fr_type: str,
+                        error: bool = False, plot: bool = True, correction: bool = False) -> list[tuple]:
         pressures_of_interest = next((i.pressures for i in self.all_frs if i.pressures), [1.5, 2.4])
         all_frs_raw = self.all_frs if not correction else self.all_anodes if fr_type == "Anode" else self.all_cathodes
 
-        if certification == 'all':
-            title_base = [f'{fr_type} {fr_entry.fr_id} Flow' if fr_entry else 'All FRs Flow'] * len(pressures_of_interest)
-            all_frs = all_frs_raw
+        if isinstance(certification, str):
+            cert_list = None if certification.lower() == 'all' else [certification]
         else:
-            title_base = [f'{fr_type} {fr_entry.fr_id} Flow, Compared to {certification}' if \
-                          fr_entry else f'All FRs Flow, Compared to {certification}'] * len(pressures_of_interest)
-            all_frs = [i for i in all_frs_raw if "-".join(i.fr_id.split("-")[:-1]) == certification]
+            cert_list = certification
 
-        if correction and not all_frs:
-            all_frs = all_frs_raw
+        if cert_list is None:
+            filtered_frs = all_frs_raw
+            title_cert = None
+        else:
+            filtered_frs = [i for i in all_frs_raw if "-".join(i.fr_id.split("-")[:-1]) in cert_list]
+            title_cert = ", ".join(cert_list)
 
-        orifice_list, flow_lists, error_lists = [], [[] for _ in pressures_of_interest], [[] for _ in pressures_of_interest]
+        if correction and not filtered_frs:
+            filtered_frs = all_frs_raw
 
-        for fr in all_frs:
+        filtered_frs = [fr for fr in filtered_frs if fr.flow_rates and fr.orifice_diameter and fr.pressures]
+
+        if not any(fr.flow_rates for fr in filtered_frs):
+            print("Filtered FR subset has no flow rates. Analysis cannot be performed.")
+            return []
+
+        if title_cert:
+            title_base = [f'{fr_type} {fr_entry.fr_id} Flow, Compared to {title_cert}' if fr_entry
+                        else f'All FRs Flow, Compared to {title_cert}'] * len(pressures_of_interest)
+        else:
+            title_base = [f'{fr_type} {fr_entry.fr_id} Flow' if fr_entry else 'All FRs Flow'] * len(pressures_of_interest)
+
+        orifice_list, flow_lists, error_lists, cert_labels = [], [[] for _ in pressures_of_interest], [[] for _ in pressures_of_interest], []
+
+        for fr in filtered_frs:
+            cert_label = "-".join(fr.fr_id.split("-")[:-1])
             if fr_entry and fr.fr_id == fr_entry.fr_id:
                 continue
-            if fr.orifice_diameter and fr.flow_rates:
+            if fr.orifice_diameter and fr.flow_rates and fr.pressures:
                 orifice_list.append(fr.orifice_diameter)
+                cert_labels.append(cert_label)
                 for i, p_val in enumerate(pressures_of_interest):
                     idx = np.argmin(np.abs(np.array(fr.pressures) - p_val))
+                    if idx >= len(fr.flow_rates):
+                        continue
                     flow = fr.flow_rates[idx]
                     flow_lists[i].append(flow)
                     if error:
@@ -1148,10 +1185,13 @@ class ManifoldQuery:
                     else:
                         error_lists[i].append(0)
 
-        if fr_entry and fr_entry.orifice_diameter and fr_entry.flow_rates:
+        if fr_entry and fr_entry.orifice_diameter and fr_entry.flow_rates and fr_entry.pressures:
             orifice_list.append(fr_entry.orifice_diameter)
+            cert_labels.append("Current FR Entry")
             for i, p_val in enumerate(pressures_of_interest):
                 idx = np.argmin(np.abs(np.array(fr_entry.pressures) - p_val))
+                if idx >= len(fr_entry.flow_rates):
+                    continue
                 flow = fr_entry.flow_rates[idx]
                 flow_lists[i].append(flow)
                 if error:
@@ -1175,42 +1215,60 @@ class ManifoldQuery:
             y_pred = model.predict(X)
             coef = model.coef_
             intercept = model.intercept_
-            r2 = model.score(X, y)  # Compute R² once
+            r2 = model.score(X, y)
             models.append((model, y_pred, coef, intercept, r2))
 
+        plt.figure(figsize=(18, 5 * n_pressures), layout="constrained")
+        cmap = plt.get_cmap("tab20")
+        unique_certs = list(dict.fromkeys(cert_labels))
+        color_map = {cert: cmap(i % 20) for i, cert in enumerate(unique_certs)}
+
+        # Scatter plots per pressure
+        for i, p_val in enumerate(pressures_of_interest):
+            plt.subplot(n_pressures, 2, i + 1)
+            for j, od in enumerate(orifice_list):
+                plt.scatter([od], [flow_lists[i][j]], color=color_map[cert_labels[j]], zorder=5)
+            plt.plot(orifice_list, models[i][1], color='blue')  # Regression line
+            if p_val in reference_pressures:
+                ref_idx = reference_pressures.index(p_val)
+                plt.scatter([reference_orifice], [reference_values[ref_idx]], color='red', marker='x', s=100, zorder=1000)
+            plt.title(
+                title_base[i]
+                + f' @ {p_val} [bar]\n m_dot = {models[i][2][0]:.3f}*OD + {models[i][3]:.3f} | R²={models[i][4]:.3f}',
+                pad=12
+            )
+            plt.grid(True)
+            plt.xlabel('Orifice Diameter [mm]')
+            plt.ylabel(f'Flow @ {p_val} [bar] [mg/s]')
+
+        handles, labels = [], []
+
+        handles.append(plt.Line2D([0], [0], color='blue'))
+        labels.append("Regression Line")
+        handles.append(plt.Line2D([0], [0], color='red', marker='x', linestyle='None', markersize=8))
+        labels.append("Reference Point")
+
+        if "Current FR Entry" in color_map:
+            handles.append(plt.Line2D([0], [0], color=color_map["Current FR Entry"], marker='o', linestyle='None'))
+            labels.append("Current FR Entry")
+
+        for cert, color in color_map.items():
+            if cert != "Current FR Entry":
+                handles.append(plt.Line2D([0], [0], color=color, marker='o', linestyle='None'))
+                labels.append(cert)
+
+        fig = plt.gcf()
+        fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 0.4), ncol=8, fontsize=10)
+
         if plot:
-            plt.figure(figsize=(18, 5*n_pressures))
-
-            for i, p_val in enumerate(pressures_of_interest):
-                plt.subplot(n_pressures, 2, i + 1)
-                plt.errorbar(orifice_list, flow_lists[i], yerr=error_lists[i], fmt='o', alpha=0.7, label='FRs')
-                plt.plot(orifice_list, models[i][1], color='blue', label='Regression Line')
-
-                # Plot fr_entry
-                if fr_entry and fr_entry.orifice_diameter and fr_entry.flow_rates:
-                    idx = np.argmin(np.abs(np.array(fr_entry.pressures) - p_val))
-                    plt.scatter([fr_entry.orifice_diameter], [fr_entry.flow_rates[idx]], color='black', zorder=5,
-                                label=f'Flow @ {p_val} [bar]: {fr_entry.fr_id} = {fr_entry.flow_rates[idx]:.3f} [mg/s]')
-                    if error:
-                        err = max(self.anode_fs_error if self.anode else self.cathode_fs_error,
-                                self.reading_error * fr_entry.flow_rates[idx])
-                        plt.errorbar([fr_entry.orifice_diameter], [fr_entry.flow_rates[idx]], yerr=[[err], [err]],
-                                    fmt='o', color='red', capsize=5)
-
-                # Plot reference only if current pressure is 1.5 or 2.4
-                if p_val in reference_pressures:
-                    ref_idx = reference_pressures.index(p_val)
-                    plt.scatter([reference_orifice], [reference_values[ref_idx]], color='green', marker='x', s=100, label='Reference Point')
-
-                # Use stored R² from models
-                plt.title(title_base[i] + f' @ {p_val} [bar]\n m_dot = {models[i][2][0]:.3f}*OD + {models[i][3]:.3f} | R²={models[i][4]:.3f}')
-                plt.grid(True)
-                plt.xlabel('Orifice Diameter [mm]')
-                plt.ylabel(f'Flow @ {p_val} [bar] [mg/s]')
-                plt.legend(loc='lower center', bbox_to_anchor=(0.5, -0.3), ncol=2)
-
-            plt.tight_layout()
             plt.show()
+        else:
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight')
+            buf.seek(0)
+            img_bytes = buf.getvalue()
+            plt.close()
+            return img_bytes
 
         return models
 
@@ -1674,7 +1732,7 @@ class ManifoldQuery:
             ax.set_xlabel('Orifice Diameter [mm]')
             ax.set_ylabel('Pressure Drop [Pa]')
             ax.grid(True)
-            ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=2)
+            ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.45), ncol=2)
 
         # Remove unused axes if any
         for j in range(i + 1, len(axs)):
@@ -1739,7 +1797,8 @@ class ManifoldQuery:
             cathode_fr = self.session.query(CathodeFR).filter(
                 (CathodeFR.set_id == None) & 
                 (CathodeFR.flow_rates != None) & 
-                (CathodeFR.allocated == None)
+                (CathodeFR.allocated == None) &
+                (CathodeFR.fr_id.notlike("C25-0412"))
             ).all()
         else:
             cathode_fr = None
@@ -1825,7 +1884,8 @@ class ManifoldQuery:
         # Display all valid pairs
         print("\nAll valid pairs:")
         df_all = pd.DataFrame(flat_data)
-        display_df_in_chunks(df_all)
+        styled_df_all = df_all.style.hide(axis = 'index')
+        display_df_in_chunks(styled_df_all)
 
         # Build bipartite graph
         G = nx.Graph()
@@ -1849,7 +1909,11 @@ class ManifoldQuery:
 
         print("\nExpected Maximum matching:")
         df_max = pd.DataFrame(max_match_data)
-        display_df_in_chunks(df_max)
+        format_dict = {
+            col: "{:.2f}" for col in df_max.columns if col.startswith("Ratio")
+        }
+        styled_df = df_max.style.format(format_dict).hide(axis = 'index')
+        display(styled_df)
 
         # Visualize bipartite graph
         pos = nx.bipartite_layout(G, top_nodes)
