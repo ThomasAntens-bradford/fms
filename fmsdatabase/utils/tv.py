@@ -79,9 +79,7 @@ class TVListener(FileSystemEventHandler):
         print(self.path)
         
     def on_created(self, event):
-        print('oke')
         if event.is_directory:
-            print('jaman')
             return
 
         if event.src_path.endswith('.xls'):
@@ -109,14 +107,15 @@ class TVListener(FileSystemEventHandler):
             self._processing = True
             try:
                 self.test_reference = os.path.basename(event.src_path).split('_LP_')[0]
-
                 self.tv_data = TVData(test_results_file=event.src_path)
                 self.tv_data.extract_tv_test_results_from_excel()
                 self.processed = True
             finally:
                 self._processing = False
         elif event.src_path.endswith('.csv'):
-            match = re.search(r"(\d+_\d+_\d+)\s(\d+_\d+_\d+)", event.src_path)
+            match = re.search(r"(\d+_\d+_\d+)\s(\d+_\d+_\d+)", os.path.basename(event.src_path))
+            if not match:
+                match = re.search(r"(\d+_\d+_\d+)\s(\d+_\d+_\d+)_", os.path.basename(event.src_path))
             if match:
                 self.test_reference = f"{match.group(1)}_{match.group(2)}"
             
@@ -1782,7 +1781,9 @@ class TVLogicSQL:
 
     def test_id_to_datetime(self, test_id: str) -> datetime:
         # Extract the numeric parts: month_day_year_hour_min_sec
-        match = re.search(r'(\d+)_(\d+)_(\d+)_(\d+)_(\d+)_(\d+)', test_id)
+        match = re.search(r"(\d+_\d+_\d+)\s(\d+_\d+_\d+)", test_id)
+        if not match:
+            match = re.search(r"(\d+_\d+_\d+)\s(\d+_\d+_\d+)_", test_id)
         if not match:
             return datetime.min  # fallback for invalid format
         month, day, year, hour, minute, second = map(int, match.groups())
@@ -1822,6 +1823,7 @@ class TVLogicSQL:
             existing_cycles = session.query(TVTvac).filter_by(tv_id=self.tv_id, cycles=self.cycle_amount).first()
             if existing_cycles:
                 test_date = self.test_id_to_datetime(existing_cycles.test_id)
+                print(current_test_date, test_date)
                 if current_test_date > test_date:
                     new_time = [t + existing_cycles.time[-1] for t in results.get('time', [])]
                     existing_cycles.time = existing_cycles.time + new_time
@@ -1830,11 +1832,14 @@ class TVLogicSQL:
                         if key != 'time':
                             existing_cycles.__setattr__(key, existing_cycles.__getattribute__(key) + value)
                 else:
-                    new_time = [t + results.get('time', [0])[-1] for t in existing_cycles.time]
-                    results['time'] = results.get('time', []) + new_time
+                    offset = results.get('time', [0])[-1]
+                    shifted_existing_time = [t + offset for t in existing_cycles.time]
+                    existing_cycles.time = results.get('time', []) + shifted_existing_time
+
                     for key, value in results.items():
                         if key != 'time':
-                            results[key] = value + existing_cycles.__getattribute__(key)
+                            existing_cycles.__setattr__(key, value + existing_cycles.__getattribute__(key))
+
             else:
                 new_entry = TVTvac(
                     test_id=self.test_reference,

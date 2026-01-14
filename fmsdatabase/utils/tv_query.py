@@ -140,7 +140,7 @@ class TVQuery:
                 self.tv_id = self.tv_from_fms
                 print(f"No TV status available for thermal valve {self.tv_from_fms}")
                 self.test_runs = self.session.query(TVTestRuns).filter_by(tv_id=self.tv_from_fms).all()
-                self.tvac_runs = self.session.query(TVTvac).filter_by(tv_id=self.tv_from_fms).all()
+
                 if not self.test_runs:
                     print(f"No test runs found for thermal valve {self.tv_from_fms}")
                 else:
@@ -979,7 +979,6 @@ class TVQuery:
         plt.tight_layout(rect=[0, 0, 1, 0.97])
         plt.show()
 
-
     def count_cycles(self, data: list[float], threshold: float = 0.05) -> int:
         """
         Counts the number of cycles in the given data.
@@ -1026,7 +1025,6 @@ class TVQuery:
                 layout={'width': '600px'}
             )
             output = widgets.Output()
-
             def update_plot(change):
                 selected_range = change['new']
                 with output:
@@ -1088,6 +1086,8 @@ class TVQuery:
         ax3 = plt.subplot(2, 2, 3)  # Vacuum
         ax4 = plt.subplot(2, 2, 4)  # Power
 
+        total_cycles = 0
+
         for idx, tvac_run in enumerate(self.tvac_runs):
             time = tvac_run.time
             outlet_temp_2 = tvac_run.outlet_temp_2
@@ -1100,8 +1100,8 @@ class TVQuery:
             max_tv_outlet = max(outlet_temp_2) if outlet_temp_2 else None
             min_tv_outlet = min(outlet_temp_2) if outlet_temp_2 else None
             actual_cycles = self.count_cycles(power) if power.any() else 0
+            total_cycles += actual_cycles
 
-            # Apply time range if given
             if time_range:
                 indices = [i for i, t in enumerate(time) if time_range[0] <= t <= time_range[1]]
                 if not indices:
@@ -1112,13 +1112,11 @@ class TVQuery:
                 vacuum_in_mbar = [vacuum_in_mbar[i] for i in indices] if vacuum_in_mbar else []
                 power = [power[i] for i in indices]
 
-            # Cycle range for label
             cycle_start = 0 if cycles <= 1000 else cycles - 1000
             cycle_end = cycles
             label = f'{tvac_run.test_id} | Cycles: {cycle_start}-{cycle_end}\n Actual Cycles: {actual_cycles} | Max TV Outlet: {max_tv_outlet:.2f} °C | Min TV Outlet: {min_tv_outlet:.2f} °C'
             legend_labels.append((colors[idx], label))
 
-            # Plot curves in subplots
             ax1.plot(time, outlet_temp_2, color=colors[idx])
             if if_plate:
                 ax2.plot(time, if_plate, color=colors[idx])
@@ -1126,7 +1124,6 @@ class TVQuery:
                 ax3.plot(time, vacuum_in_mbar, color=colors[idx])
             ax4.plot(time, power, color=colors[idx])
 
-        # Set titles, labels, grids
         ax1.set_title(f"TVAC Outlet Temp 2 for cycles 0-{cycle_end}")
         ax1.set_xlabel("Time [h]")
         ax1.set_ylabel("Temperature [°C]")
@@ -1150,7 +1147,8 @@ class TVQuery:
         # Single legend at bottom
         handles = [plt.Line2D([0], [0], color=c, lw=2) for c, _ in legend_labels]
         labels = [l for _, l in legend_labels]
-        plt.tight_layout(rect=[0, 0.08, 1, 1])
+        plt.suptitle(f"TVAC Analysis: total cycles = {total_cycles}", fontsize=14, fontweight='bold')
+        plt.tight_layout(rect=[0, 0.08, 1, 0.96])
         plt.figlegend(handles, labels, loc="lower center", ncol=2, fontsize=8)
 
         plt.show()

@@ -12,6 +12,7 @@ import numpy as np
 from scipy.stats import norm
 from sqlalchemy import func
 import io
+from datetime import datetime
 
 # Local imports
 from .general_utils import display_df_in_chunks, LimitStatus, LPTCoefficientParameters
@@ -22,7 +23,8 @@ from ..db import (
     AnodeFR, 
     CathodeFR, 
     FRCertification, 
-    FMSMain
+    FMSMain,
+    TestingTools
 )
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -563,10 +565,34 @@ class ManifoldQuery:
         values = [round(getattr(fr_entry, c), 3) if isinstance(getattr(fr_entry, c), (float, int)) else getattr(fr_entry, c) for c in columns]
         df = pd.DataFrame({"Field": columns, "Value": values})
 
-        tools: list[dict] = fr_entry.tools
-        tools_for_df = [{key.replace("_", " ").title(): value for key, value in i.items() if key != 'type'} for i in tools]
+        tools: list[dict[str, str]] = fr_entry.tools
+        all_tools = self.session.query(TestingTools).all()
+        tool_cols = TestingTools.__table__.columns
+        df_data = []
 
-        tools_df = pd.DataFrame(tools_for_df)
+        def get_data(tool: TestingTools, column: str):
+            value = getattr(tool, column)
+            if isinstance(value, (datetime,)):
+                return value.strftime("%d-%m-%Y")
+            elif column == "description":
+                return " ".join(value.split("_")).title()
+            return value
+
+        for tool in tools:
+            model = tool.get("model")
+            serial = tool.get("serial_number")
+            description = tool.get("description")
+            matching_tool = next(
+                (t for t in all_tools if t.model == model and t.serial_number == serial and t.description == description),
+                None
+            )
+            if matching_tool is None:
+                continue  
+
+            df_row = {" ".join(c.name.split("_")).title(): get_data(matching_tool, c.name) for c in tool_cols if c.name != "id"}
+            df_data.append(df_row)
+
+        tools_df = pd.DataFrame(df_data)
 
         def style_value(val, row):
             col_name = row['Field']
@@ -1773,9 +1799,8 @@ class ManifoldQuery:
     def match_flow_restrictors(self, ratio: float = 13, tolerance: float = 0.5,
                             simulated_anode_fr: dict = None, simulated_cathode_fr: dict = None) -> None:
         """
-        Match flow restrictors based on a specified ratio.
-        Display all valid pairs and the subset that ensures maximum number of matches,
-        using the Hopcroft-Karp algorithm for bipartite matching.
+        Match flow restrictors based on a specified ratio using weighted bipartite matching.
+        Closer matches to the target ratio are preferred.
 
         Args:
             ratio (float): The target ratio to match flow restrictors.
@@ -1783,11 +1808,15 @@ class ManifoldQuery:
             simulated_anode_fr (dict): Optional pre-simulated anode flow data.
             simulated_cathode_fr (dict): Optional pre-simulated cathode flow data.
         """
+        def fr_id_sort_key(fr_id: str):
+            parts = fr_id.split("-")
+            return (int(parts[0][1:]), int(parts[1]), int(parts[2]))
+
         # Fetch database records if no simulated data is provided
         if simulated_anode_fr is None:
             anode_fr = self.session.query(AnodeFR).filter(
-                (AnodeFR.set_id == None) & 
-                (AnodeFR.flow_rates != None) & 
+                (AnodeFR.set_id == None) &
+                (AnodeFR.flow_rates != None) &
                 (AnodeFR.allocated == None)
             ).all()
         else:
@@ -1795,8 +1824,8 @@ class ManifoldQuery:
 
         if simulated_cathode_fr is None:
             cathode_fr = self.session.query(CathodeFR).filter(
-                (CathodeFR.set_id == None) & 
-                (CathodeFR.flow_rates != None) & 
+                (CathodeFR.set_id == None) &
+                (CathodeFR.flow_rates != None) &
                 (CathodeFR.allocated == None) &
                 (CathodeFR.fr_id.notlike("C25-0412"))
             ).all()
@@ -1808,11 +1837,9 @@ class ManifoldQuery:
         flat_data = []
         anodes_with_zero, cathodes_with_zero = [], []
 
-        # Helper function to process either DB or simulated flows
+        # Helper function to process pairs
         def process_pairs(anodes, cathodes, sim_flag=False):
             for a_id, a_obj in (anodes if sim_flag else [(x.fr_id, x) for x in anodes]):
-
-                # --- ANODE FLOW RATES ---
                 if sim_flag:
                     a_flow = np.atleast_1d(np.array(a_obj.get("flow_rates", []), dtype=float))
                     a_press = a_obj.get("pressures", [])
@@ -1827,8 +1854,6 @@ class ManifoldQuery:
                 self.fr_matching_ratios[a_id] = {}
 
                 for c_id, c_obj in (cathodes if sim_flag else [(x.fr_id, x) for x in cathodes]):
-
-                    # --- CATHODE FLOW RATES ---
                     if sim_flag:
                         c_flow = np.atleast_1d(np.array(c_obj.get("flow_rates", []), dtype=float))
                         c_press = c_obj.get("pressures", [])
@@ -1843,7 +1868,6 @@ class ManifoldQuery:
                     a_slice = a_flow[:min_len]
                     c_slice = c_flow[:min_len]
 
-                    # --- ZERO FLOW SKIP ---
                     if np.any(a_slice == 0):
                         if not sim_flag and a_id not in anodes_with_zero:
                             idx = np.where(a_slice == 0)[0][0]
@@ -1858,7 +1882,6 @@ class ManifoldQuery:
                             cathodes_with_zero.append(c_id)
                         continue
 
-                    # --- MATCHING ---
                     ratio_vec = a_slice / c_slice
                     if np.all((ratio_vec >= ratio - tolerance) & (ratio_vec <= ratio + tolerance)):
                         self.fr_matching_dict[a_id].append(c_id)
@@ -1869,50 +1892,57 @@ class ManifoldQuery:
                             row[f"Ratio {i}"] = r
                         flat_data.append(row)
 
-        # Process based on available data
+        # Process data
         simulation = False
         if simulated_anode_fr and simulated_cathode_fr:
             simulation = True
-            process_pairs(simulated_anode_fr.items(), simulated_cathode_fr.items(), sim_flag=simulation)
+            process_pairs(simulated_anode_fr.items(), simulated_cathode_fr.items(), sim_flag=True)
         else:
-            process_pairs(anode_fr, cathode_fr, sim_flag=False)
+            # Sort anodes and cathodes for deterministic processing
+            anode_fr = sorted(anode_fr, key=lambda x: fr_id_sort_key(x.fr_id))
+            cathode_fr = sorted(cathode_fr, key=lambda x: fr_id_sort_key(x.fr_id))
+            process_pairs(anode_fr, cathode_fr)
 
         if not flat_data:
             print(f"No valid flow restrictor pairs found for ratio {ratio}.")
             return
 
-        # Display all valid pairs
-        print("\nAll valid pairs:")
-        df_all = pd.DataFrame(flat_data)
-        styled_df_all = df_all.style.hide(axis = 'index')
-        display_df_in_chunks(styled_df_all)
+        print(f"Tried matching with: {len(anode_fr)} Anodes and "
+            f"{len(cathode_fr)} Cathodes")
 
-        # Build bipartite graph
+        # --- Build weighted bipartite graph ---
         G = nx.Graph()
-        for anode_id, cathode_dict in self.fr_matching_ratios.items():
-            for cathode_id in cathode_dict.keys():
-                G.add_edge(anode_id, cathode_id)
+        for a_id in sorted(self.fr_matching_ratios.keys(), key=fr_id_sort_key):
+            for c_id in sorted(self.fr_matching_ratios[a_id].keys(), key=fr_id_sort_key):
+                # Weight = mean absolute deviation from target ratio
+                ratio_vec = self.fr_matching_ratios[a_id][c_id]
+                weight = np.mean(np.abs(ratio_vec - ratio)**2)
+                G.add_edge(a_id, c_id, weight=weight)
 
-        top_nodes = [n for n in self.fr_matching_dict.keys() if n in G.nodes]
-        matching = nx.algorithms.bipartite.maximum_matching(G, top_nodes=top_nodes)
+        # Sorted top nodes
+        top_nodes = sorted([n for n in self.fr_matching_dict.keys() if n in G.nodes], key=fr_id_sort_key)
 
-        # Maximum matching
+        # Weighted maximum matching (Hungarian)
+        matching = nx.algorithms.bipartite.minimum_weight_full_matching(G, top_nodes=top_nodes, weight='weight')
+
+        # Prepare display data for maximum matching
         max_match_data = []
-        for anode_id in top_nodes:
-            matched_cathode = matching.get(anode_id)
-            if matched_cathode:
-                ratios = self.fr_matching_ratios[anode_id][matched_cathode]
-                row = {"Anode ID": anode_id, "Cathode ID": matched_cathode}
+        for a_id in top_nodes:
+            if a_id in matching:
+                c_id = matching[a_id]
+                ratios = self.fr_matching_ratios[a_id][c_id]
+                row = {"Anode ID": a_id, "Cathode ID": c_id}
                 for i, r in enumerate(ratios, start=1):
                     row[f"Ratio {i}"] = r
                 max_match_data.append(row)
 
-        print("\nExpected Maximum matching:")
+        matching_yield = len(max_match_data)/min(len(anode_fr), len(cathode_fr))*100
+        print(f"Matching yield: {matching_yield:.2f} %")
+
+        print("\nWeighted Maximum Matching (closest to target ratio):")
         df_max = pd.DataFrame(max_match_data)
-        format_dict = {
-            col: "{:.2f}" for col in df_max.columns if col.startswith("Ratio")
-        }
-        styled_df = df_max.style.format(format_dict).hide(axis = 'index')
+        format_dict = {col: "{:.2f}" for col in df_max.columns if col.startswith("Ratio")}
+        styled_df = df_max.style.format(format_dict).hide(axis='index')
         display(styled_df)
 
         # Visualize bipartite graph
@@ -1929,7 +1959,7 @@ class ManifoldQuery:
                 edge_color='gray',
                 font_size=8,
                 width=1.2)
-        plt.title("Bipartite Graph of Valid Anode–Cathode Pairings" if not simulation else "Expected Matches from Simulated Data")
+        plt.title("Weighted Bipartite Graph of Anode–Cathode Pairings")
         plt.axis('off')
         plt.show()
 

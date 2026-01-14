@@ -187,9 +187,10 @@ class FMSDataStructure:
     print_table(table_class, limit):
         Print rows of a given table class from the database, to a specified limit.
     """
-    
+    # absolute_data_dir: str = r"C:\\Users\\TANTENS\\Documents\\fms_data_collection"
     def __init__(self, excel_extraction: bool = True, test_path: str = r"\\be.local\Doc\DocWork\20025 - CHEOPS2 Low Power\70 - Testing",
-                 absolute_data_dir: str = r"C:\\Users\\TANTENS\\Documents\\fms_data_collection", local = True) -> None:
+                 absolute_data_dir: str = r"\\be.local\Doc\DocWork\99999 - FMS industrialisation\40 - Engineering\03 - Data flow\fms_data_collection",\
+                      local = True) -> None:
 
         if local:
             local_appdata = Path(os.environ.get("LOCALAPPDATA", os.getcwd()))
@@ -445,9 +446,9 @@ class FMSDataStructure:
             operator = ["JKR", "NRN"]
             
             for anode_path, cathode_path, tester in zip(anode_paths, cathode_paths, operator):
-                self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_path, cathode_path=cathode_path, operator = tester)
+                self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_path, cathode_path=cathode_path, operator = tester, tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
         else:
-            self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_fr_path, cathode_path=cathode_fr_path)
+            self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_fr_path, cathode_path=cathode_fr_path, tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
 
     def flow_restrictor_testing(self) -> None:
         """
@@ -1220,7 +1221,7 @@ class FMSDataStructure:
             limit (int, optional): Maximum number of records to print. Defaults to None (print all).
         """
         session = None
-        # return
+        return
         try:
             session = self.Session()
             query = session.query(table_class)

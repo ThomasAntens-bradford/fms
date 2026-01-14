@@ -5,16 +5,13 @@ import re
 import time
 import traceback
 from datetime import datetime
+import json
 
 # --- Third-Party Libraries ---
 import numpy as np
 import openpyxl
-import matplotlib.pyplot as plt
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
-import ipywidgets as widgets
-from IPython.display import display, clear_output
-from sqlalchemy.orm import load_only
 
 # --- Script Path Handling ---
 if __name__ == "__main__":
@@ -28,6 +25,7 @@ from ..db import (
     CathodeFR,
     ManifoldStatus,
     LPTCalibration,
+    TestingTools
 )
 
 from .ocr_reader import OCRReader
@@ -36,9 +34,7 @@ from .general_utils import (
     FRParts,
     ManifoldProgressStatus,
     extract_total_amount,
-    FRStatus,
-    load_from_json,
-    show_modal_popup
+    FRStatus
 )
 
 # --- Type Checking ---
@@ -626,7 +622,7 @@ class FRData:
         if self.outlet_total_lines:
             self.extracted_fr_parts = self.extract_outlet_quantity()
 
-    def get_tools(self, type: str, trs_reference: str):
+    def get_tools(self, tools_path: str, type: str, trs_reference: str):
         """
         Takes trs reference tool data and assigns them to the current FR being processed.
 
@@ -639,31 +635,35 @@ class FRData:
             components type:
         """
         import random
-        trs_tools = load_from_json("trs_tools_fr", directory="useful_data")
-        relevant_tools = trs_tools.get(trs_reference, [])
+        trs_tools = {}
+        if os.path.exists(tools_path):
+            with open(tools_path, 'r', encoding='utf-8') as f:
+                trs_tools = json.load(f)
+
+        relevant_tools: list[dict[str, str]] = trs_tools.get(trs_reference, [])
         if not relevant_tools:
             return []
         
         components = []
         
-        possible_TR = [i for i in relevant_tools if i["component_name"] == "Temperature Recorder"]
+        possible_TR = [i for i in relevant_tools if i["description"] == "Temperature Recorder"]
         chosen_TR = random.choice(possible_TR)
-        components.append(chosen_TR)
+        components.append({"description": "_".join(chosen_TR.get("description").split()).lower(), "serial_number": chosen_TR.get("serial_number"), "model": chosen_TR.get("model")})
 
-        possible_FS = [i for i in relevant_tools if i["component_name"] == "Mass Flow Sensor" and i["type"] == type]
+        possible_FS = [i for i in relevant_tools if i["description"] == "Mass Flow Sensor" and i["type"] == type]
         chosen_FS = random.choice(possible_FS)
-        components.append(chosen_FS)
+        components.append({"description": "_".join(chosen_FS.get("description").split()).lower(), "serial_number": chosen_FS.get("serial_number"), "model": chosen_FS.get("model")})
 
-        possible_IP = [i for i in relevant_tools if i["component_name"] == "Inlet Pressure Controller"]
+        possible_IP = [i for i in relevant_tools if i["description"] == "Inlet Pressure Controller"]
         chosen_IP = random.choice(possible_IP)
-        components.append(chosen_IP)
+        components.append({"description": "_".join(chosen_IP.get("description").split()).lower(), "serial_number": chosen_IP.get("serial_number"), "model": chosen_IP.get("model")})
 
-        possible_OP = [i for i in relevant_tools if i["component_name"] == "Outlet Pressure Controller"]
+        possible_OP = [i for i in relevant_tools if i["description"] == "Outlet Pressure Controller"]
         chosen_OP = random.choice(possible_OP)
-        components.append(chosen_OP)
+        components.append({"description": "_".join(chosen_OP.get("description").split()).lower(), "serial_number": chosen_OP.get("serial_number"), "model": chosen_OP.get("model")})
         return components
 
-    def excel_data_loop(self, row: tuple, type: str) -> dict:
+    def excel_data_loop(self, row: tuple, type: str, tools_path: str) -> dict:
         """
         Processes a row of Excel data for either anode or cathode FRs.
         """
@@ -716,7 +716,7 @@ class FRData:
         if any(re.match(r'^(n/?a)$', str(val).strip(), re.IGNORECASE) for val in flow_rates):
             return {}
         
-        tools = self.get_tools(type, trs_reference)
+        tools = self.get_tools(tools_path, type, trs_reference)
 
         fr_dict = {
             'fr': type.capitalize(),
@@ -741,7 +741,7 @@ class FRData:
 
         return fr_dict
 
-    def extract_data_from_excel(self, operator: str = "JKR") -> list:
+    def extract_data_from_excel(self, operator: str = "JKR", tools_path: str = "trs_tools_fr") -> list:
         """
         Extracts FR test results from Excel files.
         Returns:
@@ -761,13 +761,15 @@ class FRData:
         for idx, row in enumerate(wb_anode.active.iter_rows(min_row=3, values_only=True)):
             if all(cell is None for cell in row):
                 break
-            fr_dict = self.excel_data_loop(row, type='anode')
+            fr_dict = self.excel_data_loop(row, type='anode', tools_path=tools_path)
             cell = ws.cell(row=idx+1, column=1)
             filled = cell.fill.fill_type == 'solid'
-            if filled:
+            if filled and bool(fr_dict.get("flow_rates", [])):
                 operator = "NRN"
-            else:
+            elif bool(fr_dict.get("flow_rates", [])):
                 operator = "JKR"
+            else:
+                operator = ""
 
             if fr_dict:  
                 fr_dict["operator"] = operator
@@ -783,19 +785,15 @@ class FRData:
         for idx, row in enumerate(wb_cathode.active.iter_rows(min_row=3, values_only=True)):
             if all(cell is None for cell in row):
                 break
-            fr_dict = self.excel_data_loop(row, type='cathode')
+            fr_dict = self.excel_data_loop(row, type='cathode', tools_path=tools_path)
             cell = ws.cell(row=idx+1, column=1)
-            filled = (
-                cell.fill is not None and
-                cell.fill.fill_type == "solid" and
-                cell.fill.fgColor is not None and
-                cell.fill.fgColor.type == "rgb" and
-                cell.fill.fgColor.rgb not in ("00000000", "FFFFFFFF")
-            )
-            if filled:
+            filled = cell.fill.fill_type == 'solid'
+            if filled and bool(fr_dict.get("flow_rates", [])):
                 operator = "NRN"
-            else:
+            elif bool(fr_dict.get("flow_rates", [])):
                 operator = "JKR"
+            else:
+                operator = ""
 
             if fr_dict:  
                 fr_dict["operator"] = operator
@@ -1027,32 +1025,6 @@ class FRLogicSQL:
             if session:
                 session.close()
 
-    def get_flow_restrictors(self) -> None:
-        """
-        Retrieves all anode and cathode flow restrictors from the database that are not allocated to any set.
-        """
-        session = None
-        self.fr_dict = {}
-        try:
-            session = self.Session()
-            all_anodes = session.query(AnodeFR).filter(AnodeFR.set_id == None).all()
-            all_cathodes = session.query(CathodeFR).filter(CathodeFR.set_id == None).all()
-            for fr in all_anodes:
-                columns = [c.name for c in AnodeFR.__table__.columns]
-                values = [getattr(fr, c) for c in columns]
-                self.fr_dict[fr.fr_id] = {"serial_number": fr.fr_id, 'fr': "Anode", **dict(zip(columns, values))}
-            for fr in all_cathodes:
-                columns = [c.name for c in CathodeFR.__table__.columns]
-                values = [getattr(fr, c) for c in columns]
-                self.fr_dict[fr.fr_id] = {"serial_number": fr.fr_id, 'fr': "Cathode", **dict(zip(columns, values))}
-
-        except Exception as e:
-            print(f"Error retrieving flow restrictor certifications: {e}")
-            traceback.print_exc()
-        finally:
-            if session:
-                session.close()
-
     def get_status(self, flow_rates: list, type: str) -> FRStatus:
         """
         Determines the status of FRs based on flow rates and type.
@@ -1098,406 +1070,6 @@ class FRLogicSQL:
             return FRStatus.DIFF_RADIUS
         elif not radius_different:
             return status
-        
-    def flow_test_inputs(self) -> None:
-        """
-        Displays the UI for the FR flow testing inputs.
-            - Select FR type (Anode/Cathode)
-            - Select serial number from available unallocated FRs
-            - Input temperature, gas type, radius
-            - Input pressures and corresponding flow rates
-            - Remark field
-        Methods
-        -----------
-            clear_fields(): Clears all input fields.
-            update_serial_options(change): Updates serial number options based on selected FR type.
-            on_serial_change(change): Updates input fields based on selected serial number.
-            on_field_change(change): Clears output when any input field changes.
-            on_check_clicked(b): Validates the input measurements and displays results.
-            on_submit_clicked(b): Submits the measurements to the database.
-        """
-        label_width = '180px'
-        field_width = '350px'
-        self.get_flow_restrictors()
-        self._loading = False
-        output = widgets.Output()
-
-        session: "Session" = self.Session()
-
-        def field(description):
-            return dict(
-                description=description,
-                layout=widgets.Layout(width=field_width),
-                style={'description_width': label_width}
-            )
-        
-        def check_value(value: float, key: str, flow_rate_idx: int | None, flow_rate = False, type: str = "Anode"):
-            if not flow_rate:
-                all_values = [i.get(key, None) for i in self.fr_dict.values() if bool(i.get(key, None)) and i.get("fr") == type]
-            else:
-                all_values = [i.get("flow_rates", [])[flow_rate_idx] for i in self.fr_dict.values() if bool(i.get("flow_rates", [])) and i.get("fr") == type]
-
-            std = np.std(all_values)
-            avg = np.average(all_values)
-            
-            norm = (value - avg) / std
-            return abs(norm) <= 1.5, avg
-        
-        def update_value(value: float, key: str, model: AnodeFR | CathodeFR, flow_rate_idx: float | None = None):
-            if not flow_rate_idx:
-                self.fr_dict[model.fr_id][key] = value
-                if hasattr(model, key):
-                    setattr(model, key, value)
-            else:
-                flow_rates = self.fr_dict[model.fr_id]["flow_rates"]
-                if not flow_rates:
-                    flow_rates = [0, 0, 0, 0]
-                flow_rates[flow_rate_idx] = value
-                setattr(model, "flow_rates", flow_rates)
-
-        def clear_widget(widget: widgets.Widget, old_value: float = None):
-            widget.value = old_value if old_value else 0
-            
-        self.pressures = []
-        self.flow_rates = []
-        self.measurement_widgets = []
-        self.last_anode = ""
-        self.last_cathode = ""
-
-        fr_widget = widgets.Dropdown(
-            options=["Anode", "Cathode"],
-            value="Anode",
-            **field("Select FR Type")
-        )
-
-        operator_widget = widgets.Text(
-            value = self.fms.operator,
-            **field("Operator:"),
-            disabled = True
-        )
-
-        serial_number_widget = widgets.Dropdown(
-            **field("Serial Number:"),
-            options=[i for i in self.fr_dict if self.fr_dict[i]['fr'] == "Anode"] if self.fr_dict else [],
-            value=self.fr_id if getattr(self, "fr_id", None) else None
-        )
-        temperature_widget = widgets.BoundedFloatText(**field("Temperature [°C]:"), value=0, min = 0, max = 50)
-        operator_row = widgets.HBox([operator_widget, temperature_widget])
-
-        gas_type_widget = widgets.Dropdown(**field("Gas Type:"), options=["Xe", "Kr"])
-        radius_widget = widgets.BoundedFloatText(**field("Radius [mm]:"), min = 0, step = 0.001)
-        thickness_widget = widgets.BoundedFloatText(**field("Thickness [mm]:"), min = 0, step = 0.001)
-        orifice_widget = widgets.BoundedFloatText(**field("Orifice Diameter [mm]:"), min = 0, step = 0.0001)
-
-        dimension_row = widgets.HBox([orifice_widget, radius_widget, thickness_widget])
-
-        serial_row = widgets.HBox([fr_widget, serial_number_widget, gas_type_widget])
-
-        pressure_1 = widgets.BoundedFloatText(**field("Pressure [barA]:"), min=0, value=1.0, disabled = True)
-        flow_rate_1 = widgets.BoundedFloatText(**field("Flow Rate [mg/s]:"), min=0, value=0.0, step = 0.01)
-        pressure_15 = widgets.BoundedFloatText(**field("Pressure [barA]:"), min=0, value=1.5, disabled = True)
-        flow_rate_15 = widgets.BoundedFloatText(**field("Flow Rate [mg/s]:"), min=0, value=0.0, step = 0.01)
-        pressure_2 = widgets.BoundedFloatText(**field("Pressure [barA]:"), min=0, value=2.0, disabled = True)
-        flow_rate_2 = widgets.BoundedFloatText(**field("Flow Rate [mg/s]:"), min=0, value=0.0, step = 0.01)
-        pressure_24 = widgets.BoundedFloatText(**field("Pressure [barA]:"), min=0, value=2.4, disabled = True)
-        flow_rate_24 = widgets.BoundedFloatText(**field("Flow Rate [mg/s]:"), min=0, value=0.0, step = 0.01)
-
-        flow_widgets = [flow_rate_1, flow_rate_15, flow_rate_2, flow_rate_24]
-        row_1 = widgets.HBox([pressure_1, flow_rate_1])
-        row_15 = widgets.HBox([pressure_15, flow_rate_15])
-        row_2 = widgets.HBox([pressure_2, flow_rate_2])
-        row_24 = widgets.HBox([pressure_24, flow_rate_24])
-
-        remark_field = widgets.Textarea(
-            description="Remark:",
-            layout=widgets.Layout(width='500px', height='150px'),
-            style={'description_width': '150px'},
-            placeholder="Enter any remarks here..."
-        )
-
-        check_button = widgets.Button(button_style='success', **field("Check Measurements"))
-        button_box = widgets.HBox([check_button])
-
-        widget_key_map = {
-            gas_type_widget: "gas_type",
-            temperature_widget: "temperature",
-            radius_widget: "radius",
-            orifice_widget: "orifice_diameter",
-            thickness_widget: "thickness",
-            flow_rate_1: "flow_rate_1",
-            flow_rate_15: "flow_rate_15",
-            flow_rate_2: "flow_rate_2",
-            flow_rate_24: "flow_rate_24"
-        }
-
-        def clear_fields():
-            nonlocal button_box
-            self._loading = True
-            temperature_widget.value = 0
-            radius_widget.value = 0
-            orifice_widget.value = 0
-            thickness_widget.value = 0
-            for w in flow_widgets:
-                w.value = 0
-            remark_field.value = ""
-            self._loading = False
-            button_box.children = (check_button, )
-
-        def update_serial_options(change):
-            anode_selected = change["new"] == "Anode"
-
-            if change["old"] == "Anode":
-                self.last_anode = serial_number_widget.value
-            else:
-                self.last_cathode = serial_number_widget.value
-
-            new_options = [
-                i for i in self.fr_dict
-                if self.fr_dict[i]['fr'] == ("Anode" if anode_selected else "Cathode")
-            ]
-
-            serial_number_widget.value = None
-            serial_number_widget.options = new_options
-
-            if anode_selected:
-                serial_number_widget.value = self.last_anode if self.last_anode in new_options else None
-            else:
-                serial_number_widget.value = self.last_cathode if self.last_cathode in new_options else None
-
-            serial_number_widget.observe(on_serial_change, names='value')
-
-            if serial_number_widget.value is None:
-                clear_fields()
-
-        def on_serial_change(change):
-            nonlocal button_box
-            if self._loading:
-                return
-
-            fr_id = change['new']
-            self._loading = True
-            button_box.children = (check_button,)
-
-            if fr_id and fr_id in self.fr_dict:
-                fr_data = self.fr_dict[fr_id]
-                temperature_widget.value = fr_data.get('temperature', 0) or 0
-                radius_widget.value = fr_data.get('radius', 0) or 0
-                orifice_widget.value = fr_data.get('orifice_diameter', 0) or 0
-                thickness_widget.value = fr_data.get('thickness', 0) or 0
-                operator_widget.value = fr_data.get('operator', self.fms.operator)
-                flow_rates = fr_data.get('flow_rates', [0, 0, 0, 0])
-                if flow_rates:
-                    for widget, value in zip(flow_widgets, flow_rates):
-                        widget.value = value or 0
-                else:
-                    for widget in flow_widgets:
-                        widget.value = 0
-
-                remark_field.value = fr_data.get("remark", "") or ""
-            else:
-                clear_fields()
-
-            self._loading = False
-
-        def on_field_change(change, widget: widgets.Widget):
-            output.clear_output()
-            old_value = change["old"]
-            if self._loading:
-                return
-            try:
-                if not serial_number_widget.value:
-                    with output:
-                        print("Please select a valid Serial Number before making changes.")
-                    return
-
-                fr_id = serial_number_widget.value
-                anode = fr_widget.value == "Anode"
-                parameter = widget_key_map.get(widget, "")
-                value = widget.value
-                flow_rate_idx = None
-                flow_rate = False
-                if "flow_rate" in parameter:
-                    flow_rate_idx = flow_widgets.index(widget)
-                    flow_rate = True
-
-                fr_model = session.query(AnodeFR if anode else CathodeFR).filter_by(fr_id=fr_id).first()
-                if fr_model:
-                    if bool(value):
-                        passed, avg = check_value(value, parameter, flow_rate_idx, flow_rate, type = "Anode" if anode else "Cathode")
-                        if not passed:
-                            with output:
-                                show_modal_popup(f"The value for {parameter.replace("_", " ").title()}: {value:.4f} seems a bit out of proportion to the rest of the flow restrictors,\n"
-                                                 f"which have an average {parameter.replace("_", " ").title()} of {avg:.4f}.\n\n"
-                                                "Do you want to keep this value?", continue_action= lambda: update_value(value, parameter, fr_model, flow_rate_idx),\
-                                                      cancel_action=lambda: clear_widget(widget, old_value = old_value))
-                        else:
-                            update_value(value, parameter, fr_model, flow_rate_idx)
-
-            except Exception as e:
-                with output:
-                    print(f"Error updating FR data: {e}")
-            finally:
-                if session:
-                    session.rollback()
-                    session.close()
-
-        submit_button = widgets.Button(button_style='primary', **field("Submit Results"))
-        image_output = widgets.Output()
-        comparison_image_output = widgets.Output()
-
-        def on_check_clicked(b):
-            nonlocal button_box
-            with output:
-                clear_output()
-                if not serial_number_widget.value:
-                    print("Please select a valid Serial Number before checking measurements.")
-                    return
-
-                pressures = [
-                    pressure_1.value, pressure_15.value,
-                    pressure_2.value, pressure_24.value
-                ]
-                flow_rates = [
-                    flow_rate_1.value, flow_rate_15.value,
-                    flow_rate_2.value, flow_rate_24.value
-                ]
-
-                temperature = temperature_widget.value
-                orifice = orifice_widget.value
-
-                if all(f > 0 for f in flow_rates) and all(p > 0 for p in pressures) and temperature and orifice:
-                    with output:
-                        output.clear_output()
-                        with image_output:
-                            image_output.clear_output()
-                            self.plot_fr_results(pressures, flow_rates, fr_widget.value, gas_type_widget.value, temperature)
-                        with comparison_image_output:
-                            comparison_image_output.clear_output()
-                            self.compare_fr_results(pressures, flow_rates, fr_widget.value, serial_number_widget.value, session)
-
-                        display(widgets.VBox([remark_field, widgets.VBox([], layout = widgets.Layout(height="50px")),\
-                                                widgets.VBox([image_output, comparison_image_output])]))
-                        
-                    button_box.children = (check_button,) + (submit_button,)
-                else:
-                    with output:
-                        print("Please enter valid flow rates, pressures, orifice diameter and temperature to plot the results.")
-            
-        check_button.on_click(on_check_clicked)
-
-        def on_submit_clicked(b):
-            with output:
-                clear_output()
-                if not serial_number_widget.value:
-                    print("Please select a valid Serial Number before submitting results.")
-                    return
-
-                pressures = [
-                    pressure_1.value, pressure_15.value,
-                    pressure_2.value, pressure_24.value
-                ]
-                flow_rates = [
-                    flow_rate_1.value, flow_rate_15.value,
-                    flow_rate_2.value, flow_rate_24.value
-                ]
-
-                temperature = temperature_widget.value
-                orifice = orifice_widget.value
-                fr_id = serial_number_widget.value
-
-                if all(f > 0 for f in flow_rates) and all(p > 0 for p in pressures) and temperature and orifice:
-                    self.fr_test_results = self.fr_dict[fr_id]
-                    self.fr_test_results["date"] = datetime.now().isoformat()
-                    self.fr_test_results["remark"] = remark_field.value
-                    self.fr_test_results["gas_type"] = gas_type_widget.value
-                    reference_orifice = self.fms.fr_data.anode_reference_orifice if fr_widget.value == "Anode" else self.fms.fr_data.cathode_reference_orifice
-                    self.fr_test_results["deviation"] = round((orifice - reference_orifice)/reference_orifice * 100, 2)
-                    self.update_fr_test_results()
-                    print(f"FR test results for {fr_id} have been updated in the database.")
-                else:
-                    print("Please enter valid flow rates, pressures, orifice diameter and temperature before submitting results.")
-
-        for widget in [gas_type_widget, temperature_widget, radius_widget, orifice_widget, thickness_widget] + flow_widgets:
-            widget.observe(lambda x, widget = widget: on_field_change(x, widget = widget), names='value')
-
-        serial_number_widget.observe(on_serial_change, names='value')
-        fr_widget.observe(update_serial_options, names='value')
-
-        submit_button.on_click(on_submit_clicked)
-        title = widgets.HTML("<h2>Flow Restrictor Testing</h2>")
-
-        form = widgets.VBox([
-            title,
-            operator_row,
-            serial_row,
-            dimension_row,
-            row_1,
-            row_15,
-            row_2,
-            row_24,
-            button_box,
-            output
-        ], layout=widgets.Layout(spacing=15))
-
-        display(form)
-
-    def compare_fr_results(self, pressures: list, flow_rates: list, type: str, serial_number: str, session: "Session"):
-        """
-        Plot the flow rates against pressures for the FR test results,
-        comparing with existing database entry, return the plot as PNG image bytes.
-        """
-        if type == "Anode":
-            fr_entries = session.query(AnodeFR).filter(AnodeFR.flow_rates != None).options(load_only(AnodeFR.fr_id, AnodeFR.flow_rates,\
-                                                                                                      AnodeFR.orifice_diameter)).limit(1000).all()
-            if not fr_entries:
-                return None
-        else:
-            fr_entries = session.query(CathodeFR).filter(CathodeFR.flow_rates != None).options(load_only(CathodeFR.fr_id, CathodeFR.flow_rates,\
-                                                                                                          CathodeFR.orifice_diameter)).limit(1000).all()
-            if not fr_entries:
-                return None
-
-        # zero_fr_ids = [entry.fr_id for entry in fr_entries if any(i == 0 for i in entry.flow_rates)]
-        # print(zero_fr_ids)
-        fr_flow_rates = [entry.flow_rates for entry in fr_entries if entry.flow_rates and not any(i == 0 for i in entry.flow_rates) if not entry.fr_id == serial_number]
-        orifices = [entry.orifice_diameter for entry in fr_entries if entry.flow_rates and not any(i == 0 for i in entry.flow_rates) and not entry.fr_id == serial_number]
-        current_orifice = next((entry.orifice_diameter for entry in fr_entries if entry.fr_id == serial_number), None)
-
-        ncols = 2
-        nrows = len(pressures) // ncols
-        fig = plt.figure(figsize=(12, 8))
-        
-        for i, p in enumerate(pressures):
-            ax = plt.subplot(nrows, ncols, i + 1)
-            if current_orifice:
-                ax.scatter([current_orifice], [flow_rates[i]], color='tab:red', label=serial_number, zorder=100)
-            ax.scatter(orifices, [fr_flow_rates[j][i] for j in range(len(fr_flow_rates))], color='tab:blue', alpha=0.3,
-                         label='Database Entries', zorder=3)
-            ax.set_title(f'Pressure: {p} BarA')
-            ax.set_xlabel('Orifice Diameter [mm]')
-            ax.set_ylabel(f'Flow Rate [mg/s]')
-            ax.grid(True)
-        
-        # Create shared legend above the entire plot
-        handles, labels = ax.get_legend_handles_labels()
-        fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 0.98), ncol=2, frameon=True)
-        
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
-        plt.show()
-
-    def plot_fr_results(self, pressures: list, flow_rates: list, type: str, gas_type: str = "Xe", temperature: float = None):
-        """
-        Plot the flow rates against pressures for the FR test results,
-        return the plot as PNG image bytes.
-        """
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(pressures, flow_rates, marker='o', linestyle='--', color='b')
-        ax.set_title(f'Flow Rate {gas_type} in {type} Flow Restrictor vs Pressure @ {temperature}°C')
-        ax.set_xlabel('Pressure [bar]')
-        ax.set_ylabel(f'Flow Rate [mg/s {gas_type}]')
-        ax.grid(True)
-
-        plt.show()
 
     def hagen_poiseuille(self, gas_type: str, flow_rate: list, thickness: float, orifice_diameter: float, viscosity: float = 1e-6) -> list:
         if any(val is None for val in flow_rate) or thickness is None or orifice_diameter is None or len(flow_rate) < 4:
@@ -1528,7 +1100,8 @@ class FRLogicSQL:
             drawing=test_results['drawing'],
             date=datetime.fromisoformat(test_results['date']).date() if test_results['date'] else None,
             remark=test_results['remark'],
-            pressure_drop=self.hagen_poiseuille(test_results.get('gas_type', "Xe"), np.array(test_results['flow_rates']), thickness, orifice) if thickness and orifice else None,
+            pressure_drop=self.hagen_poiseuille(test_results.get('gas_type', "Xe"), \
+                                                np.array(test_results['flow_rates']), thickness, orifice) if thickness and orifice else None,
             status=self.get_status(test_results['flow_rates'], fr_type),
             gas_type=test_results.get('gas_type', "Xe"),
             allocated=test_results.get('allocated'),
@@ -1546,8 +1119,56 @@ class FRLogicSQL:
             fr_model.status_geometry = self.get_radius_status(test_results['status_geometry'], test_results['radius'])
 
         return fr_model
+    
+    def update_fr_test_tools(self, tools: list[dict[str, str]]) -> None:
+        """
+        Updates the tools used during an FR test in the testing_tools table.
+        
+        :param tools: List of the tools used during the FR test.
+        :type tools: list[dict[str, str]]
+        """
+        session = None
+        try:
+            session: "Session" = self.Session()
+            for tool in tools:
+                description = tool.get("description")
+                model = tool.get("model")
+                serial = tool.get("serial_number")
+                range_ = tool.get("equipment_range")
+                accuracy = tool.get("accuracy")
+                last_calibration_date = tool.get("last_calibration_date")
+                next_calibration_date = tool.get("next_calibration_date")
+                
+                existing_tool = session.query(TestingTools).filter_by(description=description, model=model, serial_number=serial).first()
+                if existing_tool:
+                    existing_tool.equipment_range = range_
+                    existing_tool.accuracy = accuracy
+                    existing_tool.last_calibration_date = last_calibration_date
+                    existing_tool.next_calibration_date = next_calibration_date
 
-    def update_fr_test_results(self, excel_extraction: bool = False, anode_path: str = None, cathode_path: str = None, operator: str = "JKR") -> None:
+                else:
+                    new_entry = TestingTools(
+                        description = description,
+                        model = model,
+                        serial_number = serial,
+                        equipment_range = range_,
+                        accuracy = accuracy,
+                        last_calibration_date = last_calibration_date,
+                        next_calibration_date = next_calibration_date
+                    )
+                    session.add(new_entry)
+            session.commit()
+        except Exception as e:
+            print(f"Error updating FR test results: {e}")
+            if session:
+                session.rollback()
+            traceback.print_exc()
+        finally:
+            if session:
+                session.close()
+
+    def update_fr_test_results(self, excel_extraction: bool = False, anode_path: str = None,\
+                                cathode_path: str = None, operator: str = "JKR", tools_path: str = "") -> None:
         """
         Update the FR test results in the database.
         """
@@ -1557,7 +1178,7 @@ class FRLogicSQL:
 
             if excel_extraction:
                 self.fr_data = FRData(anode_excel=anode_path, cathode_excel=cathode_path) if anode_path and cathode_path else FRData()
-                self.fr_test_results = self.fr_data.extract_data_from_excel(operator = operator)
+                self.fr_test_results = self.fr_data.extract_data_from_excel(operator = operator, tools_path=tools_path)
                 if not self.fr_test_results:
                     print("No FR test results to update.")
                     return

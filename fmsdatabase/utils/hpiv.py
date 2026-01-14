@@ -385,7 +385,10 @@ class HPIVData:
                 try:
                     self.hpiv_parameters[HPIVParameters.DROPOUT_VOLT.value]['value'] = float(local_text[local_text.index('> 2 ')+1].replace('',''))
                 except Exception as e:
-                    self.hpiv_parameters[HPIVParameters.DROPOUT_VOLT.value]['value'] = float(local_text[local_text.index('2<x<3.1 Vdc')+1].replace('',''))
+                    # print([i.replace(' ', '').lower() for i in local_text])
+                    id_ = next((idx for idx, i in enumerate(local_text) if '2<x<3.1' in i.replace(' ', '').lower() and len(i.replace(' ', '')) < 25), 0)
+                    # print(local_text[id_])
+                    self.hpiv_parameters[HPIVParameters.DROPOUT_VOLT.value]['value'] = float(local_text[id_ + 1].strip())
                 
                 newpdf_page = new_pdf[23]
                 local_text = newpdf_page.get_text().split('\n')
@@ -763,7 +766,7 @@ class HPIVLogicSQL:
                         
             session.commit()
             # print(f"Successfully updated database with {len(self.hpiv_test_results)} HPIV records")
-            self.fms.print_table(HPIVCharacteristics)
+            # self.fms.print_table(HPIVCharacteristics)
             
         except Exception as e:
             print(f"Error updating HPIV characteristics: {str(e)}")
@@ -814,7 +817,7 @@ class HPIVLogicSQL:
 
             session.commit()
             print(f"Successfully updated database with HPIV part revisions")
-            self.fms.print_table(HPIVRevisions)
+            # self.fms.print_table(HPIVRevisions)
             
         except Exception as e:
             print(f"Error updating HPIV revisions: {str(e)}")
