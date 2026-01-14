@@ -1,10 +1,9 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=64", "wheel", "setuptools_scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "fmsdatabase"
-version = "0.0.1"
 authors = [
     { name = "Thomas Antens", email = "t.antens@bradford-space.com" }
 ]
@@ -44,6 +43,9 @@ Homepage = "https://github.com/ThomasAntens-bradford/fmsdatabase.git"
 [tool.setuptools]
 include-package-data = true
 
+[project.scripts]
+fmsdb = "fmsdatabase.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 namespaces = true
@@ -53,3 +55,6 @@ namespaces = true
 
 # [project.scripts]
 # fms-cli = "fmsdatabase.cli:main"
+
+[tool.setuptools_scm]
+write_to = "fmsdatabase/_version.py"
