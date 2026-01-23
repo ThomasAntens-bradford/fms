@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fmsdatabase"
-version = "0.0.1"
+version = "0.0.2"
 authors = [
     { name = "Thomas Antens", email = "t.antens@bradford-space.com" }
 ]
