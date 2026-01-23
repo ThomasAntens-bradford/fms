@@ -157,6 +157,8 @@ class FMSMainParameters(Enum):
     POWER_BUDGET_COLD = 'power_budget_cold'
     POWER_BUDGET_ROOM = 'power_budget_room'
     POWER_BUDGET_HOT = 'power_budget_hot'
+    HIGH_PROOF_PRESSURE = 'high_proof_pressure'
+    LOW_PROOF_PRESSURE = 'low_proof_pressure'
     ROOM_HPIV_DROPOUT_VOLTAGE = 'room_hpiv_dropout_voltage'
     ROOM_HPIV_PULLIN_VOLTAGE = 'room_hpiv_pullin_voltage'
     ROOM_HPIV_CLOSING_RESPONSE = 'room_hpiv_closing_response'
@@ -166,11 +168,12 @@ class FMSMainParameters(Enum):
     ROOM_HPIV_INDUCTANCE = 'room_hpiv_inductance'
     ROOM_TV_INDUCTANCE = 'room_tv_inductance'
     ROOM_HPIV_RESISTANCE = 'room_hpiv_resistance'
-    ROOM_TVPT_RESISTANCE = 'room_tvpt_resistance'
+    ROOM_TV_PT_RESISTANCE = 'room_tv_pt_resistance'
     ROOM_TV_RESISTANCE = 'room_tv_resistance'
     ROOM_LPT_RESISTANCE = 'room_lpt_resistance'
     ROOM_TV_HIGH_LEAK = 'room_tv_high_leak'
     ROOM_TV_LOW_LEAK = 'room_tv_low_leak'
+    ROOM_TV_LOW_LEAK_OPEN = 'room_tv_low_leak_open'
     ROOM_HPIV_HIGH_LEAK = 'room_hpiv_high_leak'
     ROOM_HPIV_LOW_LEAK = 'room_hpiv_low_leak'
     COLD_HPIV_DROPOUT_VOLTAGE = 'cold_hpiv_dropout_voltage'
@@ -182,11 +185,12 @@ class FMSMainParameters(Enum):
     COLD_HPIV_INDUCTANCE = 'cold_hpiv_inductance'
     COLD_TV_INDUCTANCE = 'cold_tv_inductance'
     COLD_HPIV_RESISTANCE = 'cold_hpiv_resistance'
-    COLD_TVPT_RESISTANCE = 'cold_tvpt_resistance'
+    COLD_TV_PT_RESISTANCE = 'cold_tv_pt_resistance'
     COLD_TV_RESISTANCE = 'cold_tv_resistance'
     COLD_LPT_RESISTANCE = 'cold_lpt_resistance'
     COLD_TV_HIGH_LEAK = 'cold_tv_high_leak'
     COLD_TV_LOW_LEAK = 'cold_tv_low_leak'
+    COLD_TV_LOW_LEAK_OPEN = 'cold_tv_low_leak_open'
     COLD_HPIV_HIGH_LEAK = 'cold_hpiv_high_leak'
     COLD_HPIV_LOW_LEAK = 'cold_hpiv_low_leak'
     HOT_HPIV_DROPOUT_VOLTAGE = 'hot_hpiv_dropout_voltage'
@@ -198,11 +202,12 @@ class FMSMainParameters(Enum):
     HOT_HPIV_INDUCTANCE = 'hot_hpiv_inductance'
     HOT_TV_INDUCTANCE = 'hot_tv_inductance'
     HOT_HPIV_RESISTANCE = 'hot_hpiv_resistance'
-    HOT_TVPT_RESISTANCE = 'hot_tvpt_resistance'
+    HOT_TV_PT_RESISTANCE = 'hot_tv_pt_resistance'
     HOT_TV_RESISTANCE = 'hot_tv_resistance'
     HOT_LPT_RESISTANCE = 'hot_lpt_resistance'
     HOT_TV_HIGH_LEAK = 'hot_tv_high_leak'
     HOT_TV_LOW_LEAK = 'hot_tv_low_leak'
+    HOT_TV_LOW_LEAK_OPEN = 'hot_tv_low_leak_open'
     HOT_HPIV_HIGH_LEAK = 'hot_hpiv_high_leak'
     HOT_HPIV_LOW_LEAK = 'hot_hpiv_low_leak'
     TV_HIGH_LEAK = 'tv_high_leak'
@@ -243,7 +248,7 @@ class FMSMainParameters(Enum):
     CAP_LPT_TSIGRTN = 'cap_lpt_tsig_rtn'
     CAP_PT_SGN = 'cap_pt_sgn'
     CAP_PT_SGNRTN = 'cap_pt_sgn_rtn'
-    LPT_T_RESISTANCE = 'lpt_t_resistance'
+    LPT_RESISTANCE = 'lpt_resistance'
     TV_RESISTANCE = 'tv_resistance'
     TV_PT_RESISTANCE = 'tv_pt_resistance'
     HPIV_RESISTANCE = 'hpiv_resistance'
@@ -531,7 +536,7 @@ def list_json_files() -> list:
         os.makedirs(json_cache_dir)
     return [f for f in os.listdir(json_cache_dir) if f.endswith('.json')]
 
-def load_from_json(file_name: str, directory: str = "app_data") -> dict[str, Any]:
+def load_from_json(file_name: str, directory: str = "appdata") -> dict[str, Any]:
     """
     Load data from a JSON file.
     
@@ -562,7 +567,7 @@ def load_from_json(file_name: str, directory: str = "app_data") -> dict[str, Any
     except Exception:
         return {}
 
-def save_to_json(data: dict[str, Any], file_name: str, directory: str = "app_data") -> None:
+def save_to_json(data: dict[str, Any], file_name: str, directory: str = "appdata") -> None:
     """
     Save data to a JSON file.
     
@@ -581,7 +586,7 @@ def save_to_json(data: dict[str, Any], file_name: str, directory: str = "app_dat
     with open(file_name, 'w') as f:
         json.dump(data, f, indent=4)
 
-def delete_json_file(file_name: str, directory: str = "app_data") -> None:
+def delete_json_file(file_name: str, directory: str = "appdata") -> None:
     """
     Delete a JSON file if it exists.
 

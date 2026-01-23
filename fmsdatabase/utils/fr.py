@@ -687,7 +687,9 @@ class FRData:
 
         if flow_rates and not cert and not id and self.fr_test_results:
             if "flow_rates" in self.fr_test_results[-1]:
-                self.fr_test_results[-1]["flow_rates"] = flow_rates
+                extra_tests = self.fr_test_results[-1]["extra_tests"]
+                test_number = len(extra_tests) + 2
+                extra_tests[f'test_{test_number}'] = flow_rates
             return {}  
 
         pressures = [1, 1.5, 2, 2.4]
@@ -736,7 +738,8 @@ class FRData:
             'set_id': set_id,
             'trs_reference': trs_reference,
             'tools': tools,
-            'drawing': drawing
+            'drawing': drawing.replace(",", ".") if drawing else None,
+            'extra_tests': {}
         }
 
         return fr_dict
@@ -765,14 +768,14 @@ class FRData:
             cell = ws.cell(row=idx+1, column=1)
             filled = cell.fill.fill_type == 'solid'
             if filled and bool(fr_dict.get("flow_rates", [])):
-                operator = "NRN"
+                actual_operator = "NRN"
             elif bool(fr_dict.get("flow_rates", [])):
-                operator = "JKR"
+                actual_operator = operator
             else:
-                operator = ""
+                actual_operator = ""
 
             if fr_dict:  
-                fr_dict["operator"] = operator
+                fr_dict["operator"] = actual_operator
                 self.fr_test_results.append(fr_dict)
 
         wb_cathode = openpyxl.load_workbook(self.cathode_excel, data_only=True)
@@ -789,14 +792,14 @@ class FRData:
             cell = ws.cell(row=idx+1, column=1)
             filled = cell.fill.fill_type == 'solid'
             if filled and bool(fr_dict.get("flow_rates", [])):
-                operator = "NRN"
+                actual_operator = "NRN"
             elif bool(fr_dict.get("flow_rates", [])):
-                operator = "JKR"
+                actual_operator = operator
             else:
-                operator = ""
+                actual_operator = ""
 
             if fr_dict:  
-                fr_dict["operator"] = operator
+                fr_dict["operator"] = actual_operator
                 self.fr_test_results.append(fr_dict)
             if fr_dict: 
                 self.fr_test_results.append(fr_dict)
@@ -1112,12 +1115,44 @@ class FRLogicSQL:
             radius=test_results.get('radius', None),
             thickness=thickness,
             deviation=test_results.get('deviation', None),
-            operator=test_results.get('operator', self.fms.operator)
+            operator=test_results.get('operator', self.fms.operator),
+            extra_tests=test_results.get('extra_tests', {})
         )
 
         if "radius" in test_results and "status_geometry" in test_results:
             fr_model.status_geometry = self.get_radius_status(test_results['status_geometry'], test_results['radius'])
 
+        if test_results.get("set_id"):
+            manifold_check = session.query(ManifoldStatus).filter_by(set_id=test_results['set_id']).first()
+            if not manifold_check:
+                manifold_entry = session.query(ManifoldStatus).filter_by(set_id=None, assembly_drawing=None, allocated=None).first()
+                if manifold_entry:
+                    manifold_entry.set_id = test_results['set_id']
+                    manifold_entry.status = ManifoldProgressStatus.AC_RATIO_SET
+                else:
+                    new_manifold = ManifoldStatus(
+                        set_id=test_results['set_id'],
+                        status=ManifoldProgressStatus.AC_RATIO_SET,
+                        drawing=self.fms.default_manifold_drawing
+                    )
+                    session.add(new_manifold)
+            else:
+                ac_ratio = manifold_check.ac_ratio
+                if not ac_ratio:
+                    if fr_type == "Anode":
+                        cathode_check: CathodeFR = manifold_check.cathode
+                        if cathode_check:
+                            cathode_check = cathode_check[0]
+                            ac_ratio = np.mean(np.array(fr_model.flow_rates) / np.array(cathode_check.flow_rates))
+                            manifold_check.ac_ratio = ac_ratio
+                            manifold_check.ac_ratio_specified = round(ac_ratio)
+                    else:
+                        anode_check: AnodeFR = manifold_check.anode
+                        if anode_check:
+                            anode_check = anode_check[0]
+                            ac_ratio = np.mean(np.array(anode_check.flow_rates) / np.array(fr_model.flow_rates))
+                            manifold_check.ac_ratio = ac_ratio
+                            manifold_check.ac_ratio_specified = round(ac_ratio)
         return fr_model
     
     def update_fr_test_tools(self, tools: list[dict[str, str]]) -> None:

@@ -19,7 +19,6 @@ Requires-Dist: IPython
 Requires-Dist: sqlalchemy>=1.4
 Requires-Dist: Pillow
 Requires-Dist: python-docx
-Requires-Dist: docxtpl
 Requires-Dist: PyMuPDF
 Requires-Dist: openpyxl
 Requires-Dist: ipyvuetify

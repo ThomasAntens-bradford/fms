@@ -1,13 +1,17 @@
+.gitignore
 README.md
 pyproject.toml
 alembic/env.py
 alembic/versions/94c6b274c71a_added_testing_tools_table.py
 alembic/versions/f6cfedf9ee58_added_testing_tools_table_2.py
 fmsdatabase/__init__.py
+fmsdatabase/_version.py
+fmsdatabase/cli.py
 fmsdatabase/fms_data_structure.py
 fmsdatabase.egg-info/PKG-INFO
 fmsdatabase.egg-info/SOURCES.txt
 fmsdatabase.egg-info/dependency_links.txt
+fmsdatabase.egg-info/entry_points.txt
 fmsdatabase.egg-info/requires.txt
 fmsdatabase.egg-info/top_level.txt
 fmsdatabase/db/__init__.py

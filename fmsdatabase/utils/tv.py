@@ -275,6 +275,7 @@ class TVData:
         df["time"] = (df["time"] - first_time).dt.total_seconds() / 3600
         print(df.head())
         self.test_parameters = df.to_dict(orient='records')
+        return self.test_parameters
 
     def extract_tv_test_results_from_excel(self) -> bool:
         """
@@ -1268,7 +1269,6 @@ class TVLogicSQL:
         self.plot = False
         self.tv_id = None
         self.tv_welded = False
-        self.cycle_amount = None
         self.tv_listener = None
         self.part_map = {
             "20025.12.05-R1": TVParts.GASKET.value,
@@ -1456,8 +1456,7 @@ class TVLogicSQL:
                     self.update_tv_test_results()
                 else:
                     self.tv_id = tv_id_widget.value
-                    self.cycle_amount = cycles_widget.value
-                    self.update_tv_tvac_results()
+                    self.update_tv_tvac_results(cycle_amount=cycles_widget.value)
                 confirmed_once['clicked'] = False
                 weld_warning_ack['ack'] = False
                 submitted['done'] = True
@@ -1789,7 +1788,7 @@ class TVLogicSQL:
         month, day, year, hour, minute, second = map(int, match.groups())
         return datetime(year, month, day, hour, minute, second)
 
-    def update_tv_tvac_results(self) -> None:
+    def update_tv_tvac_results(self, csv_file: str = "", cycle_amount: int = 1000) -> None:
         """
         Update TVAC test results in the database with extracted test parameters.
         This method processes the TVAC test results and updates the database with
@@ -1804,32 +1803,45 @@ class TVLogicSQL:
             except:
                 session = self.Session
 
+            match = re.search(r"(\d+_\d+_\d+)\s(\d+_\d+_\d+)", os.path.basename(csv_file))
+            if not match:
+                match = re.search(r"(\d+_\d+_\d+)\s(\d+_\d+_\d+)_", os.path.basename(csv_file))
+
+            if match:
+                test_reference = f"{match.group(1)}_{match.group(2)}"
+            else:
+                print("No test reference found")
+                return
+
+            existing_entry = session.query(TVTvac).filter(TVTvac.test_id_list.contains(test_reference)).first()
+            if existing_entry:
+                print(f"TVAC Test {test_reference} has already been registered in the DB")
+                session.close()
+                return
+                        
+            tv_data = TVData(csv_file=csv_file)
+            self.tv_test_results = tv_data.extract_tv_tvac_results()
+            
             if not hasattr(self, 'tv_test_results') or not self.tv_test_results:
                 print("No TV test results to process")
                 return
-
-            existing_entry = session.query(TVTvac).filter_by(test_id=self.test_reference).first()
-            if existing_entry:
-                session.close()
-                return
-            
+        
             results = {}
             for row in self.tv_test_results:
                 for key, value in row.items():
                     if key not in results:
                         results[key] = []
                     results[key].append(value)
-            current_test_date = self.test_id_to_datetime(self.test_reference)
-            existing_cycles = session.query(TVTvac).filter_by(tv_id=self.tv_id, cycles=self.cycle_amount).first()
+            current_test_date = self.test_id_to_datetime(test_reference)
+            existing_cycles = session.query(TVTvac).filter_by(tv_id=self.tv_id, cycles=cycle_amount).first()
             if existing_cycles:
                 test_date = self.test_id_to_datetime(existing_cycles.test_id)
-                print(current_test_date, test_date)
                 if current_test_date > test_date:
                     new_time = [t + existing_cycles.time[-1] for t in results.get('time', [])]
                     existing_cycles.time = existing_cycles.time + new_time
-                        
+
                     for key, value in results.items():
-                        if key != 'time':
+                        if key != 'time' and key != 'test_id_list':
                             existing_cycles.__setattr__(key, existing_cycles.__getattribute__(key) + value)
                 else:
                     offset = results.get('time', [0])[-1]
@@ -1837,14 +1849,18 @@ class TVLogicSQL:
                     existing_cycles.time = results.get('time', []) + shifted_existing_time
 
                     for key, value in results.items():
-                        if key != 'time':
+                        if key != 'time' and key != 'test_id_list':
                             existing_cycles.__setattr__(key, value + existing_cycles.__getattribute__(key))
 
+                existing_ids = existing_cycles.test_id_list or []
+                if test_reference not in existing_ids:
+                    existing_cycles.test_id_list = existing_ids + [test_reference]
             else:
                 new_entry = TVTvac(
-                    test_id=self.test_reference,
+                    test_id=test_reference,
+                    test_id_list = [test_reference],
                     tv_id=self.tv_id,
-                    cycles=self.cycle_amount,
+                    cycles=cycle_amount,
                     **results
                 )
                 session.add(new_entry)

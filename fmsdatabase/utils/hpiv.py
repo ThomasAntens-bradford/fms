@@ -26,7 +26,6 @@ if TYPE_CHECKING:
 from ..db import HPIVCharacteristics, HPIVCertification, HPIVRevisions
 from .general_utils import LimitStatus, HPIVParameters, HPIVParts
 from .ocr_reader import OCRReader
-from .hpiv_query import HPIVQuery
 
 
 class HPIVDataListener(FileSystemEventHandler):
@@ -878,13 +877,6 @@ class HPIVLogicSQL:
         finally:
             if session:
                 session.close()
-
-    def hpiv_query(self):
-        query = HPIVQuery(session=self.Session(), fms_entry=None, hpiv_certification=HPIVCertification, hpiv_characteristics=HPIVCharacteristics,
-                        hpiv_revisions=HPIVRevisions, limit_status=LimitStatus)
-        
-        query.hpiv_query_field()
-
 
 if __name__ == "__main__":
     # Example usage

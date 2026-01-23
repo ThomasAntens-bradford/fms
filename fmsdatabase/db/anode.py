@@ -34,6 +34,8 @@ class AnodeFR(Base):
         Measured pressures at different flow rates [p1, p2, ..., pn], usually just [1, 1.5, 2, 2.4] in bar.
     flow_rates : JSON
         Measured flow rates [f1, f2, ..., fn] in mg/s.
+    extra_tests : JSON
+        Additional tests conducted on the FR.
     date : DateTime
         Date of testing.
     status_geometry : Enum(FRStatus)
@@ -76,6 +78,7 @@ class AnodeFR(Base):
     radius = Column(Float, nullable=True)
     pressures = Column(JSON, nullable=True)
     flow_rates = Column(JSON, nullable=True)
+    extra_tests = Column(JSON, nullable=True)
     date = Column(DateTime, nullable=True)
     status_geometry = Column(Enum(FRStatus, native_enum=False), nullable=True)
     status = Column(Enum(FRStatus, native_enum=False), nullable=True)

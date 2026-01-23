@@ -32,7 +32,6 @@ from ..db import (
     LPTCoefficients,
     ManifoldStatus,
 )
-from .manifold_query import ManifoldQuery
 from .general_utils import (
     FRStatus,
     LimitStatus,
@@ -1107,13 +1106,12 @@ class ManifoldLogicSQL:
             without_cert = [row for row in self.manifold_assembly_data if not row.get('manifold_certification')]
             ordered_rows = with_cert + without_cert
             allocated_dict: dict[str, ManifoldStatus] = self.get_allocated_manifolds()
-            print(current_session_allocated, allocated_dict)
+
             for row in ordered_rows:
                 set_id = row['set_id']
                 drawing = row['drawing']
                 allocated = row['allocated']
                 if allocated and (allocated in allocated_dict or allocated in current_session_allocated):
-                    print(f"Clearing previous allocation for manifold: {allocated}")
                     faulty_manifold = allocated_dict.get(allocated) or current_session_allocated.get(allocated)
                     faulty_manifold.allocated = None
                     allocated_dict.pop(allocated, None)
@@ -1155,7 +1153,8 @@ class ManifoldLogicSQL:
                     existing_entry.status = ManifoldProgressStatus.ASSEMBLY_COMPLETED
                     current_session_allocated[allocated] = existing_entry
                 else:
-                    available_entry = session.query(ManifoldStatus).filter_by(set_id=None, allocated=None, status=ManifoldProgressStatus.AVAILABLE, certification=manifold_certification).first() if manifold_certification \
+                    available_entry = session.query(ManifoldStatus).filter_by(set_id=None, allocated=None, status=ManifoldProgressStatus.AVAILABLE, \
+                                                                              certification=manifold_certification).first() if manifold_certification \
                         else session.query(ManifoldStatus).filter_by(set_id=None, allocated=None, status=ManifoldProgressStatus.AVAILABLE).first()
                     if available_entry:
                         available_entry.set_id = set_id
@@ -1164,7 +1163,8 @@ class ManifoldLogicSQL:
                         available_entry.assembly_drawing = drawing if drawing else available_entry.assembly_drawing
                         available_entry.ac_ratio = ratio if ratio else 13
                         available_entry.ac_ratio_specified = 13
-                        available_entry.status = ManifoldProgressStatus.ASSEMBLY_COMPLETED if not assembly_certification else ManifoldProgressStatus.WELDING_COMPLETED
+                        available_entry.status = ManifoldProgressStatus.ASSEMBLY_COMPLETED if not assembly_certification else\
+                              ManifoldProgressStatus.WELDING_COMPLETED
                         current_session_allocated[allocated] = available_entry
                     else:
                         new_entry = ManifoldStatus(
@@ -1301,17 +1301,6 @@ class ManifoldLogicSQL:
         finally:
             if session:
                 session.close()
-
-    def manifold_query(self) -> None:
-        """
-        Instantiates a ManifoldQuery object for querying manifold data.
-        """
-        query = ManifoldQuery(session=self.Session(), fms_entry=None, manifold_status=ManifoldStatus,
-                 lpt_calibration=LPTCalibration, lpt_coefficients=LPTCoefficients,
-                 anode_fr=AnodeFR, cathode_fr=CathodeFR, coefficient_enum=LPTCoefficientParameters,
-                 fr_certification=FRCertification, fr_status=FRStatus, limit_status=LimitStatus)
-        
-        query.manifold_query_field()
 
 if __name__ == "__main__":
     manifold_file = "certifications/C25-0036 Coremans 513359.pdf"

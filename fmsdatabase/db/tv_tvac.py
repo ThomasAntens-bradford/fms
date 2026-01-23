@@ -12,6 +12,8 @@ class TVTvac(Base):
     -------
     test_id : String(50)
         Primary Key. TVAC Test Identifier.
+    test_id_list : JSON
+        All TVAC Test IDs used to build the corresponding row of the table.
     tv_id : Integer
         Foreign Key. TV Identifier linking to TVStatus table.
     time : JSON
@@ -47,6 +49,7 @@ class TVTvac(Base):
     __tablename__ = 'tv_tvac'
 
     test_id = Column(String(50), primary_key=True, nullable=False)
+    test_id_list = Column(JSON, nullable=False)
     tv_id = Column(Integer, ForeignKey('tv_status.tv_id'), nullable=False)
     time = Column(JSON, nullable=True)
     outlet_elbow = Column(JSON, nullable=True)

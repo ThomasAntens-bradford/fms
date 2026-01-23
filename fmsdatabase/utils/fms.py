@@ -312,11 +312,12 @@ class FMSData:
             'room_hpiv_inductance': {'min': None, 'max': None},
             'room_tv_inductance': {'min': None, 'max': None},
             'room_hpiv_resistance': {'min': None, 'max': None},
-            'room_tvpt_resistance': {'min': None, 'max': None},
-            'room_tv_resistance': {'min': None, 'max': None},
+            'room_tv_pt_resistance': {'min': None, 'max': None},
+            'room_tv_resistance': {'min': 150-0.1*150, 'max': 150+0.1*150, 'nominal': 150, 'tolerance': 10},
             'room_lpt_resistance': {'min': None, 'max': None},
             'room_tv_high_leak': {'min': 0, 'max': 1e-5},
             'room_tv_low_leak': {'min': 0, 'max': 1e-5},
+            'room_tv_low_leak_open': {'min': None, 'max': None},
             'room_hpiv_high_leak': {'min': 0, 'max': 1e-5},
             'room_hpiv_low_leak': {'min': 0, 'max': 1e-5},
             'cold_hpiv_dropout_voltage': {'min': 0, 'max': 4},
@@ -328,11 +329,12 @@ class FMSData:
             'cold_hpiv_inductance': {'min': None, 'max': None},
             'cold_tv_inductance': {'min': None, 'max': None},
             'cold_hpiv_resistance': {'min': None, 'max': None},
-            'cold_tvpt_resistance': {'min': None, 'max': None},
-            'cold_tv_resistance': {'min': None, 'max': None},
+            'cold_tv_pt_resistance': {'min': None, 'max': None},
+            'cold_tv_resistance': {'min': 150-0.1*150, 'max': 150+0.1*150, 'nominal': 150, 'tolerance': 10},
             'cold_lpt_resistance': {'min': None, 'max': None},
             'cold_tv_high_leak': {'min': 0, 'max': 1e-5},
             'cold_tv_low_leak': {'min': 0, 'max': 1e-5},
+            'cold_tv_low_leak_open': {'min': None, 'max': None},
             'cold_hpiv_high_leak': {'min': 0, 'max': 1e-5},
             'cold_hpiv_low_leak': {'min': 0, 'max': 1e-5},
             'hot_hpiv_dropout_voltage': {'min': 0, 'max': 4},
@@ -345,10 +347,12 @@ class FMSData:
             'hot_tv_inductance': {'min': None, 'max': None},
             'hot_hpiv_resistance': {'min': None, 'max': None},
             'hot_tvpt_resistance': {'min': None, 'max': None},
-            'hot_tv_resistance': {'min': None, 'max': None},
+            'hot_tv_resistance': {'min': 150-0.1*150, 'max': 150+0.1*150, 'nominal': 150, 'tolerance': 10},
             'hot_lpt_resistance': {'min': None, 'max': None},
+            'hot_tv_pt_resistance': {'min': None, 'max': None},
             'hot_tv_high_leak': {'min': 0, 'max': 1e-5},
             'hot_tv_low_leak': {'min': 0, 'max': 1e-5},
+            'hot_tv_low_leak_open': {'min': None, 'max': None},
             'hot_hpiv_high_leak': {'min': 0, 'max': 1e-5},
             'hot_hpiv_low_leak': {'min': 0, 'max': 1e-5},
             'tv_high_leak': {'min': 0, 'max': 1e-5},
@@ -389,10 +393,10 @@ class FMSData:
             'cap_lpt_tsig_rtn': {'min': 0, 'max': 50},
             'cap_pt_sgn': {'min': 0, 'max': 50},
             'cap_pt_sgn_rtn': {'min': 0, 'max': 50},
-            'lpt_t_resistance': {'min': 3442-0.1*3442, 'max': 3442+0.1*3442},
-            'tv_resistance': {'min': 150-0.1*150, 'max': 150+0.1*150},
+            'lpt_resistance': {'min': 3442-0.1*3442, 'max': 3442+0.1*3442, 'nominal': 3442, 'tolerance': 10},
+            'tv_resistance': {'min': 150-0.1*150, 'max': 150+0.1*150, 'nominal': 150, 'tolerance': 10},
             'tv_pt_resistance': {'min': None, 'max': None},
-            'hpiv_resistance': {'min': 43.4-0.1*43.4, 'max': 43.4+0.1*43.4},
+            'hpiv_resistance': {'min': 43.3-0.1*43.3, 'max': 43.3+0.1*43.3, 'nominal': 43.3, 'tolerance': 10},
             'hpiv_opening_power': {'min': None, 'max': None},
             'hpiv_opening_response': {'min': 0, 'max': 20},
             'hpiv_hold_power': {'min': None, 'max': None},
@@ -469,11 +473,11 @@ class FMSData:
                 'room': FMSMainParameters.ROOM_TV_RESISTANCE.value
             },
             FMSMainParameters.TV_PT_RESISTANCE.value: {
-                'hot': FMSMainParameters.HOT_TVPT_RESISTANCE.value,
-                'cold': FMSMainParameters.COLD_TVPT_RESISTANCE.value,
-                'room': FMSMainParameters.ROOM_TVPT_RESISTANCE.value
+                'hot': FMSMainParameters.HOT_TV_PT_RESISTANCE.value,
+                'cold': FMSMainParameters.COLD_TV_PT_RESISTANCE.value,
+                'room': FMSMainParameters.ROOM_TV_PT_RESISTANCE.value
             },
-            FMSMainParameters.LPT_T_RESISTANCE.value: {
+            FMSMainParameters.LPT_RESISTANCE.value: {
                 'hot': FMSMainParameters.HOT_LPT_RESISTANCE.value,
                 'cold': FMSMainParameters.COLD_LPT_RESISTANCE.value,
                 'room': FMSMainParameters.ROOM_LPT_RESISTANCE.value
@@ -656,7 +660,6 @@ class FMSData:
             df = df[keep_cols]
         else:
             print("Not all columns found, trying another separator.")
-            print(next(col for col in keep_cols if col not in df.columns))
             trials = [None, ',']
             trial = trial + 1
             if trial >= len(trials):
@@ -1515,7 +1518,7 @@ class FMSData:
 
             if 'pressure proof pressure' in page_text.lower() and 5 <= page_number <= 25:
                 lines = [line for line in page_text.strip().split('\n')]
-                self.extract_leakage(lines)
+                self.extract_leakage(lines, search_proof_pressure = True)
                 page_number += 5
 
             if 'tvac cycle' in page_text.lower() and not 'health check' in page_text.lower() and not 'functional performance' in page_text.lower() and 20 <= page_number <= 55:
@@ -1608,7 +1611,7 @@ class FMSData:
                 power_budget['peak'] = peak
                 self.fms_main_test_results[key] = power_budget
 
-    def extract_leakage(self, lines: list[str], tvac_label: str = None) -> None:
+    def extract_leakage(self, lines: list[str], tvac_label: str = None, search_proof_pressure: bool = False) -> None:
         """
         Extract leakage test results from the provided lines of text, adds to fms_main_test_results attribute.
         Args:
@@ -1617,6 +1620,7 @@ class FMSData:
         """
         equal_value = '='
         equal_values = ['=', '<', '>']
+
         def parse_val(val):
             nonlocal equal_value
             equal_value = next((ev for ev in equal_values if ev in val), '=')
@@ -1628,6 +1632,23 @@ class FMSData:
 
         for i, line in enumerate(lines):
             line_lower = line.strip().lower()
+
+            if search_proof_pressure:
+                if 'high pressure proof pressure' in line_lower:
+                    match = re.search(r"(\d+(?:\.\d+)?)\s*bara", line_lower)
+                    if match:
+                        pressure = float(match.group(1))
+                        self.fms_main_test_results[FMSMainParameters.HIGH_PROOF_PRESSURE.value] = {
+                        "value": pressure, "unit": "barA", 'lower': False, 'larger': False, 'equal': True
+                        }
+
+                elif 'low pressure proof pressure' in line_lower:
+                    match = re.search(r"(\d+(?:\.\d+)?)\s*bara", line_lower)
+                    if match:
+                        pressure = float(match.group(1))
+                        self.fms_main_test_results[FMSMainParameters.LOW_PROOF_PRESSURE.value] = {
+                        "value": pressure, "unit": "barA", 'lower': False, 'larger': False, 'equal': True
+                        }
 
             if "lp fms – low pressure section" in line_lower:
                 act_val = parse_val(lines[i + 3])
@@ -1665,6 +1686,18 @@ class FMSData:
                 self.fms_main_test_results[param_key] = {
                     "value": act_val, "unit": "scc/s GHe"
                 }
+                if bool(tvac_label):
+                    line_idx = i + 3
+                    while line_idx < len(lines):
+                        if "10 bara" in lines[line_idx].strip().lower():
+                            act_val = parse_val(lines[line_idx + 2])
+                            self.fms_main_test_results[f"{tvac_label}_tv_low_leak_open"] = {
+                                "value": act_val, "unit": "scc/s GHe"
+                            }
+                            break
+
+                        else:
+                            line_idx += 1
 
             elif "tv" in line_lower and len(line_lower) < 10 and "190 bara" in lines[i + 1].lower():
                 act_val = parse_val(lines[i + 3])
@@ -1672,6 +1705,17 @@ class FMSData:
                 self.fms_main_test_results[param_key] = {
                     "value": act_val, "unit": "scc/s GHe"
                 }
+                if bool(tvac_label):
+                    line_idx = i + 3
+                    while line_idx < len(lines):
+                        if "190 bara" in lines[line_idx].strip().lower():
+                            act_val = parse_val(lines[line_idx + 2])
+                            self.fms_main_test_results[f"{tvac_label}_tv_high_leak_open"] = {
+                                "value": act_val, "unit": "scc/s GHe"
+                            }
+                            break
+                        else:
+                            line_idx += 1      
 
     def extract_hpiv_performance(self, lines: list[str], tvac_label: str = None) -> None:
         """
@@ -1785,7 +1829,7 @@ class FMSData:
             "lpt t sig rtn": FMSMainParameters.CAP_LPT_TSIGRTN.value,
             "pt1000 sgn": FMSMainParameters.CAP_PT_SGN.value,
             "pt1000 sgn rtn": FMSMainParameters.CAP_PT_SGNRTN.value,
-            "lpt t": FMSMainParameters.LPT_T_RESISTANCE.value,
+            "lpt t": FMSMainParameters.LPT_RESISTANCE.value,
             "tv": FMSMainParameters.TV_RESISTANCE.value,
             "tv pt1000": FMSMainParameters.TV_PT_RESISTANCE.value,
             "hpiv": FMSMainParameters.HPIV_RESISTANCE.value,
@@ -2477,18 +2521,19 @@ class FMSLogicSQL:
                     print(f"Error parsing date: {str(e)}")
                     date = datetime.now().date()
 
-                print(self.test_id)
                 tvac_entry = FMSTvac(**update_dict, fms_id=self.selected_fms_id, test_id=self.test_id,
                                     date=date, remark=self.remark)
                 session.add(tvac_entry)
 
                 fms_main = tvac_entry.fms_main
                 if fms_main:
-                    fms_main.status = FMSProgressStatus.TVAC_COMPLETED if not (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
+                    fms_main.status = FMSProgressStatus.TVAC_COMPLETED if not (fms_main.status == FMSProgressStatus.SHIPMENT or\
+                                                                                fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
                 else:
                     fms_main = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
                     if fms_main:
-                        fms_main.status = FMSProgressStatus.TVAC_COMPLETED if not (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
+                        fms_main.status = FMSProgressStatus.TVAC_COMPLETED if not (fms_main.status == FMSProgressStatus.SHIPMENT or\
+                                                                                    fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
                 session.commit()
             
             self.fms.print_table(FMSTvac, limit=10)
@@ -3119,15 +3164,14 @@ class FMSLogicSQL:
             if not fms_id:
                 print("FMS ID not found in component serials.")
                 return
-
+            
             for param, values in self.fms_test_results.items():
                 characteristics = session.query(FMSTestResults).filter_by(
-                    fms_id=fms_id, parameter_name=param).all()
+                    fms_id=fms_id, parameter_name = param).all()
                 if characteristics:
                     for char in characteristics:
                         session.delete(char)
                     session.commit()
-
 
                 if param in [FMSMainParameters.POWER_BUDGET_COLD.value, 
                              FMSMainParameters.POWER_BUDGET_HOT.value, 
@@ -3182,7 +3226,7 @@ class FMSLogicSQL:
         for fms_id in processed_fms_ids:
             existing = session.query(FMSLimits).filter_by(fms_id = fms_id).first()
             if existing:
-                session.delete(existing)
+                continue
             limits_entry = FMSLimits(
                 fms_id=fms_id,
                 limits=fms_limits

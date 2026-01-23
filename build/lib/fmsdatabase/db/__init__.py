@@ -23,6 +23,7 @@ from .hpiv_revisions import HPIVRevisions
 from .fms_acceptance_tests import FMSAcceptanceTests
 from .fms_limits import FMSLimits
 from .fms_procedures import FMSProcedures
+from .testing_tools import TestingTools
 
 from .base import Base
 
@@ -30,4 +31,4 @@ __all__ = [ "HPIVCertification", "HPIVCharacteristics", "Base", "TVTestRuns",
            "TVTestResults", "TVStatus", "TVCertification", "LPTCalibration", 
            "LPTCoefficients", "AnodeFR", "CathodeFR", "FRCertification", "ManifoldStatus",
            "FMSMain", "FMSFRTests", "FMSFunctionalResults", "FMSFunctionalTests", "FMSTestResults", "FMSTvac", "CoilAssembly", 
-           "HPIVRevisions", "TVTvac", "FMSAcceptanceTests", "FMSLimits", "FMSProcedures"]
+           "HPIVRevisions", "TVTvac", "FMSAcceptanceTests", "FMSLimits", "FMSProcedures", "TestingTools"]

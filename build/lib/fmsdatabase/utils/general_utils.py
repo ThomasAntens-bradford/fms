@@ -6,6 +6,7 @@ from scipy.stats import ttest_ind
 import json
 import os
 from IPython.display import display
+import ipywidgets as widgets
 from pandas.io.formats.style import Styler
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
@@ -287,6 +288,28 @@ class TVTvacParameters(Enum):
     TV_CURRENT = "tv_current"
     ALARM_121 = "alarm_121"
 
+class TVTvacParameters2(Enum):
+    SCAN = "scan"
+    TIME = "time"
+    OUTLET_ELBOW = "outlet_elbow"
+    ALARM_101 = "alarm_101"
+    OUTLET_TEMP_1 = "outlet_temp_1"
+    ALARM_102 = "alarm_102"
+    INTERFACE_TEMP = "interface_temp"
+    ALARM_103 = "alarm_103"
+    OUTLET_TEMP_2 = "outlet_temp_2"
+    ALARM_104 = "alarm_104"
+    IF_PLATE_1 = "if_plate_1"
+    ALARM_105 = "alarm_105"
+    IF_PLATE_2 = "if_plate_2"
+    ALARM_106 = "alarm_106"
+    VACUUM = "vacuum"
+    ALARM_109 = "alarm_109"
+    TV_VOLTAGE = "tv_voltage"
+    ALARM_110 = "alarm_110"
+    TV_CURRENT = "tv_current"
+    ALARM_121 = "alarm_121"
+
 class HPIVParameters(Enum):
     """
     Enum defining all HPIV (High Pressure Isolation Valve) test parameters.
@@ -503,11 +526,12 @@ def list_json_files() -> list:
     Returns:
         list: List of JSON file names without extension.
     """
-    if not os.path.exists('json_cache'):
-        os.makedirs('json_cache')
-    return [f for f in os.listdir('json_cache') if f.endswith('.json')]
+    json_cache_dir = os.path.join(os.getenv('APPDATA'), 'json_cache')
+    if not os.path.exists(json_cache_dir):
+        os.makedirs(json_cache_dir)
+    return [f for f in os.listdir(json_cache_dir) if f.endswith('.json')]
 
-def load_from_json(file_name: str) -> dict[str, Any]:
+def load_from_json(file_name: str, directory: str = "appdata") -> dict[str, Any]:
     """
     Load data from a JSON file.
     
@@ -517,20 +541,28 @@ def load_from_json(file_name: str) -> dict[str, Any]:
     Returns:
         dict: Parsed JSON data.
     """
-    package_dir = os.path.dirname(os.path.dirname(__file__))
+
+    if directory == "appdata":
+        json_cache_dir = os.path.join(os.getenv('APPDATA'), 'json_cache')
+    else:
+        json_cache_dir = directory
+
+    if not os.path.exists(json_cache_dir):
+        os.makedirs(json_cache_dir)
+
     if not file_name.endswith('.json'):
         file_name += '.json'
 
-    file_path = os.path.join(package_dir, "json_cache", file_name)
+    file_path = os.path.join(json_cache_dir, file_name)
     try:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File {file_path} does not exist.")
         with open(file_path, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except Exception as e:
+    except Exception:
         return {}
 
-def save_to_json(data: dict[str, Any], file_name: str) -> None:
+def save_to_json(data: dict[str, Any], file_name: str, directory: str = "appdata") -> None:
     """
     Save data to a JSON file.
     
@@ -538,21 +570,28 @@ def save_to_json(data: dict[str, Any], file_name: str) -> None:
         data (dict): Data to save.
         file_name (str): Path to the JSON file.
     """
-    package_dir = os.path.dirname(os.path.dirname(__file__))
-    json_cache_dir = os.path.join(package_dir, "json_cache")
+    if directory == "appdata":
+        json_cache_dir = os.path.join(os.getenv('APPDATA'), 'json_cache')
+    else:
+        json_cache_dir = directory
+    if not os.path.exists(json_cache_dir):
+        os.makedirs(json_cache_dir)
+    
     file_name = os.path.join(json_cache_dir, file_name if file_name.endswith('.json') else f"{file_name}.json")
     with open(file_name, 'w') as f:
         json.dump(data, f, indent=4)
 
-def delete_json_file(file_name: str) -> None:
+def delete_json_file(file_name: str, directory: str = "appdata") -> None:
     """
     Delete a JSON file if it exists.
 
     Args:
         file_name (str): Path to the JSON file.
     """
-    package_dir = os.path.dirname(os.path.dirname(__file__))
-    json_cache_dir = os.path.join(package_dir, "json_cache")
+    if directory == "appdata":
+        json_cache_dir = os.path.join(os.getenv('APPDATA'), 'json_cache')
+    else:
+        json_cache_dir = directory
     file_name = os.path.join(json_cache_dir, file_name if file_name.endswith('.json') else f"{file_name}.json")
     if os.path.exists(file_name):
         os.remove(file_name)
@@ -756,7 +795,7 @@ def linear_regression(X: np.ndarray | list, y: np.ndarray | list) -> tuple:
     intercept = model.intercept_
     return model, y_pred, coef, intercept
 
-def show_modal_popup(message: str, continue_action: callable) -> None:
+def show_modal_popup(message: str, continue_action: callable, cancel_action: callable = None) -> None:
     """
     Display a modal popup that floats above all other widgets.
     continue_action: function executed when 'Continue Anyway' is clicked.
@@ -783,6 +822,8 @@ def show_modal_popup(message: str, continue_action: callable) -> None:
     # Button handlers
     def on_cancel(widget, event, data):
         dialog.v_model = False
+        if cancel_action is not None:
+            cancel_action()
 
     def on_continue(widget, event, data):
         dialog.v_model = False
@@ -792,3 +833,10 @@ def show_modal_popup(message: str, continue_action: callable) -> None:
     card.children[-1].children[2].on_event('click', on_continue)
 
     display(dialog)
+
+def field(description, label_width = '180px', field_width = '350px'):
+    return dict(
+        description=description,
+        layout=widgets.Layout(width=field_width),
+        style={'description_width': label_width}
+    )
