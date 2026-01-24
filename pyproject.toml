@@ -3,12 +3,12 @@ requires = ["setuptools>=64", "wheel", "setuptools_scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fmsdatabase"
-version = "0.0.2"
+name = "fms"
+version = "0.0.1"
 authors = [
     { name = "Thomas Antens", email = "t.antens@bradford-space.com" }
 ]
-description = "A package for the FMS database"
+description = "A package for the database models of the FMS and the apps that use the data relevant to the FMS."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.8"
 dependencies = [
@@ -39,13 +39,13 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ThomasAntens-bradford/fmsdatabase.git"
+Homepage = "https://github.com/ThomasAntens-bradford/fms.git"
 
 [tool.setuptools]
 include-package-data = true
 
 [project.scripts]
-fmsdb = "fmsdatabase.cli:main"
+fms = "fms.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -58,4 +58,4 @@ namespaces = true
 # fms-cli = "fmsdatabase.cli:main"
 
 [tool.setuptools_scm]
-write_to = "fmsdatabase/_version.py"
+write_to = "fms/_version.py"
