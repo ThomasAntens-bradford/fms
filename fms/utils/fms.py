@@ -513,7 +513,7 @@ class FMSData:
         
         return base_param
     
-    def extract_tvac_from_csv(self) -> None:
+    def extract_tvac_from_csv(self) -> list[dict[str, Any]]:
         """
         Extract TVAC cycle data from CSV files and store in functional_test_results.
         Creates a Pandas DataFrame from the CSV files and processes the data.
@@ -571,7 +571,8 @@ class FMSData:
             self.test_id = base_name
 
         self.functional_test_results = self.tvac_df.to_dict(orient='records')
-        # print(self.tvac_df.head())
+
+        return self.functional_test_results
 
     def preprocess_flow_dataframe(self, trial: int, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -646,19 +647,14 @@ class FMSData:
         if df is None:  # Retry with different separator
             return
         
-        # Clean and prepare data
         df = self._clean_and_prepare_data(df)
         
-        # Trim data to valid test region
         df = self._trim_to_valid_test_region(df)
         
-        # Store functional test results
         self.functional_test_results = df.to_dict(orient='records')
-        
-        # Extract test conditions
+
         self._extract_test_conditions(df)
-        
-        # Store dataframe and process by test type
+
         self.df = df
         self._process_by_test_type(df)
 
@@ -2153,7 +2149,6 @@ class FMSLogicSQL(FMSData, FMSListener):
         Upon detecting a new file, it processes the data and updates the database accordingly.
         """
         data_folder = os.path.join(os.getcwd(), data_folder)
-        print(data_folder)
         try:
             self.start_listening(folder = data_folder)
             print(f"Started monitoring functional tests data in: {data_folder}\n Drop the xls file in the FMS Data folder on the desktop.")
@@ -2213,16 +2208,14 @@ class FMSLogicSQL(FMSData, FMSListener):
         except:
             return self.Session
 
-
-    def _ensure_fms_main_entry_exists(self, session) -> None:
+    def _ensure_fms_main_entry_exists(self, session: "Session") -> None:
         """Ensure FMS main entry exists in database, create if not."""
         fms_entry = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
         
         if not fms_entry:
             self._create_new_fms_main_entry(session)
 
-
-    def _create_new_fms_main_entry(self, session) -> None:
+    def _create_new_fms_main_entry(self, session: "Session") -> None:
         """Create a new FMS main entry in the database."""
         tv_check = session.query(TVStatus).filter_by(allocated=self.selected_fms_id).first()
         max_id = session.query(func.max(FMSMain.id)).scalar() or 0
@@ -2240,7 +2233,6 @@ class FMSLogicSQL(FMSData, FMSListener):
             new_fms.tv_id = tv_check.tv_id
         
         session.add(new_fms)
-
 
     def _prepare_flow_power_slope_data(self) -> None:
         """Prepare flow power slope data by removing array fields."""
@@ -2307,9 +2299,8 @@ class FMSLogicSQL(FMSData, FMSListener):
         flow_test_entry.test_type = type_map[self.test_type]
         flow_test_entry.inlet_pressure = self.inlet_pressure
         flow_test_entry.outlet_pressure = self.outlet_pressure
-        flow_test_entry.temp_type = self.temp_type
+        flow_test_entry.temp_type = self.temperature_type
         flow_test_entry.trp_temp = self.temperature
-        flow_test_entry.remark = self.remark
         flow_test_entry.date = date
         flow_test_entry.gas_type = self.gas_type if self.gas_type else 'Xe'
         flow_test_entry.slope12 = self.flow_power_slope.get('slope12', None)
@@ -2336,10 +2327,9 @@ class FMSLogicSQL(FMSData, FMSListener):
             test_type=type_map[self.test_type],
             inlet_pressure=self.inlet_pressure,
             outlet_pressure=self.outlet_pressure,
-            temp_type=self.temp_type,
+            temp_type=self.temperature_type,
             trp_temp=self.temperature,
             gas_type=self.gas_type if self.gas_type else 'Xe',
-            remark=self.remark,
             date=date,
             response_times=self.response_times,
             response_regions=self.response_regions,
@@ -2380,7 +2370,7 @@ class FMSLogicSQL(FMSData, FMSListener):
         ).all()
         
         if characteristics:
-            print("This test has already been registered in the database")
+            print(f"This {self.test_type} test with test ID {self.test_id} has already been registered in the database")
             return
         
         # Insert new results
@@ -2453,7 +2443,7 @@ class FMSLogicSQL(FMSData, FMSListener):
             if session:
                 session.rollback()
             traceback.print_exc()
-                
+                    
     def update_fr_characteristics_results(self, fms_data: FMSData = None) -> None:
         """
         Updates the test results from the FR characterization in the database.
@@ -2465,131 +2455,138 @@ class FMSLogicSQL(FMSData, FMSListener):
         """
         session = None
         try:
-            try:
-                session = self.Session()
-            except:
-                session = self.Session
+            session = self._get_session()
+            
             if self.functional_test_results and self.selected_fms_id:
-                fr_check = session.query(FMSFRTests).filter_by(fms_id=self.selected_fms_id, test_id=self.test_id).first()
-                # if fr_check:
-                #     print("This test has already been registered in the database")
-                #     return
-                if fr_check:
-                    session.delete(fr_check)
-
-                fms_entry = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
-                if not fms_entry:
-                    tv_check = session.query(TVStatus).filter_by(allocated = self.selected_fms_id).first()
-                    max_id = session.query(func.max(FMSMain.id)).scalar() or 0
-                    new_fms = FMSMain(
-                        fms_id=self.selected_fms_id,
-                        model='FM',
-                        status=FMSProgressStatus.TESTING,
-                        drawing='20025.10.AF-R8',
-                        gas_type=self.gas_type if self.gas_type else 'Xe',
-                        id = max_id + 1
-                    )
-                    if tv_check:
-                        new_fms.tv_id = tv_check.tv_id
-                    session.add(new_fms)                
-                fr_columns = FMSFRTests.__table__.columns.keys()
-                update_dict = {key: [value[key] for value in self.functional_test_results] for key in fr_columns if key in self.functional_test_results[0] \
-                               and not key == FMSFlowTestParameters.INLET_PRESSURE.value}
-                try:
-                    date = datetime.strptime(self.test_id, "%Y_%m_%d_%H-%M-%S").date()
-                except Exception as e:
-                    print(f"Error parsing date: {str(e)}")
-                    date = datetime.now().date()
-
-                fr_entry = FMSFRTests(**update_dict, gas_type = self.gas_type if self.gas_type else 'Xe', fms_id=self.selected_fms_id,\
-                                        inlet_pressure=self.inlet_pressure,
-                                        outlet_pressure=self.outlet_pressure, test_id=self.test_id, trp_temp = self.temperature,
-                                        date=date)
-                session.add(fr_entry)
-
+                # Delete existing entry if present
+                if not self._check_existing_fr_test(session):
+                    return
+                
+                # Ensure FMS entry exists
+                self._ensure_fms_main_entry_exists(session)
+                
+                # Create and add new FR test entry
+                self._create_and_add_fr_test(session)
+                
                 session.commit()
                 self.check_test_status()
                 self.fms.print_table(FMSFRTests)
+                
         except Exception as e:
             print(f"Error updating FR characteristics results: {str(e)}")
             if session:
                 session.rollback()
             traceback.print_exc()
 
-    def update_tvac_cycle_results(self, fms_data: FMSData = None) -> None:
+    def _check_existing_fr_test(self, session: "Session") -> bool:
+        """Check if the current FR test already exists."""
+        fr_check = session.query(FMSFRTests).filter_by(
+            fms_id=self.selected_fms_id, 
+            test_id=self.test_id
+        ).first()
+        
+        if fr_check:
+            print(f"This {self.test_type} test with test ID {self.test_id} has already been registered in the database")
+            return False
+        return True
+
+    def _create_and_add_fr_test(self, session: "Session") -> None:
+        """Create and add new FR test entry to session."""
+        # Build update dictionary from functional test results
+        update_dict = self._build_fr_update_dict()
+        
+        # Parse test date
+        date = self._parse_test_date()
+        
+        # Create FR test entry
+        fr_entry = FMSFRTests(
+            **update_dict,
+            gas_type=self.gas_type if self.gas_type else 'Xe',
+            fms_id=self.selected_fms_id,
+            inlet_pressure=self.inlet_pressure,
+            outlet_pressure=self.outlet_pressure,
+            test_id=self.test_id,
+            trp_temp=self.temperature,
+            date=date
+        )
+        
+        session.add(fr_entry)
+
+
+    def _build_fr_update_dict(self) -> dict:
+        """Build dictionary of FR test columns from functional test results."""
+        fr_columns = FMSFRTests.__table__.columns.keys()
+        
+        update_dict = {
+            key: [value[key] for value in self.functional_test_results]
+            for key in fr_columns
+            if key in self.functional_test_results[0]
+            and key != FMSFlowTestParameters.INLET_PRESSURE.value
+        }
+        
+        return update_dict
+
+    def update_tvac_cycle_results(self) -> None:
         """
         Updates TVAC cycle test results in the database with the FMS data class instance.
-        This can be done automatically from the test reports or directly using input from the FMSTesting
-        class procedure. If fms_data is not provided, it uses the attributes obtained in the
-        listening event.
-        Args:
-            fms_data (FMS_data): FMS data class instance containing TVAC cycle test results.
         """
         session = None
+        if not hasattr(self, "functional_test_results") or not bool(self.functional_test_results):
+            self.extract_tvac_from_csv()
         try:
-            try:
-                session = self.Session()
-            except Exception as e:
-                session = self.Session
-            if fms_data:
-                self.test_id = fms_data.test_id
-                self.remark = 'Automated entry'
-                self.functional_test_results = fms_data.functional_test_results
+            session = self._get_session()
             if self.functional_test_results and self.selected_fms_id:
-                tvac_check = session.query(FMSTvac).filter_by(fms_id=self.selected_fms_id, test_id=self.test_id).all()
-                if tvac_check:
-                    # print("This test has already been registered in the database")
-                    for entry in tvac_check:
-                        session.delete(entry)
-                    # return
-                fms_entry = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
-                if not fms_entry:
-                    tv_check = session.query(TVStatus).filter_by(allocated = self.selected_fms_id).first()
-                    max_id = session.query(func.max(FMSMain.id)).scalar() or 0
-                    new_fms = FMSMain(
-                        fms_id=self.selected_fms_id,
-                        model='FM',
-                        status=FMSProgressStatus.TESTING,
-                        drawing='20025.10.AF-R8',
-                        gas_type=self.gas_type if self.gas_type else 'Xe',
-                        id = max_id + 1
-                    )
-                    if tv_check:
-                        new_fms.tv_id = tv_check.tv_id
-                    session.add(new_fms)
-                total = len(self.functional_test_results)
-                tvac_columns = FMSTvac.__table__.columns.keys()
-                update_dict = {key: [value[key] for value in self.functional_test_results] for key in tvac_columns if key in self.functional_test_results[0]}
-
-                try:
-                    date = datetime.strptime(self.test_id, "%Y_%m_%d_%H-%M-%S").date()
-                except Exception as e:
-                    print(f"Error parsing date: {str(e)}")
-                    date = datetime.now().date()
-
-                tvac_entry = FMSTvac(**update_dict, fms_id=self.selected_fms_id, test_id=self.test_id,
-                                    date=date, remark=self.remark)
-                session.add(tvac_entry)
-
-                fms_main = tvac_entry.fms_main
-                if fms_main:
-                    fms_main.status = FMSProgressStatus.TVAC_COMPLETED if not (fms_main.status == FMSProgressStatus.SHIPMENT or\
-                                                                                fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
-                else:
-                    fms_main = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
-                    if fms_main:
-                        fms_main.status = FMSProgressStatus.TVAC_COMPLETED if not (fms_main.status == FMSProgressStatus.SHIPMENT or\
-                                                                                    fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
-                session.commit()
-            
-            self.fms.print_table(FMSTvac, limit=10)
-            self.fms.print_table(FMSMain, limit=10)
+                self._handle_tvac_entries(session)
+            # self.fms.print_table(FMSTvac, limit=10)
+            # self.fms.print_table(FMSMain, limit=10)
 
         except Exception as e:
             print(f"Error updating Tvac results: {str(e)}")
             if session:
                 session.rollback()
             traceback.print_exc()
+
+    def _handle_tvac_entries(self, session: "Session"):
+        if not self._check_existing_tvac_entries(session):
+            return
+        tvac_entry = self._create_tvac_entry(session)
+        self._update_fms_status(session, tvac_entry)
+        session.commit()
+
+    def _check_existing_tvac_entries(self, session: "Session"):
+        tvac_check = session.query(FMSTvac).filter_by(
+            fms_id=self.selected_fms_id, test_id=self.test_id
+        ).all()
+        if tvac_check:
+            print(f"This {self.test_type} test with test ID {self.test_id} has already been registered in the database")
+            return False
+        return True
+
+    def _create_tvac_entry(self, session: "Session"):
+        tvac_columns = FMSTvac.__table__.columns.keys()
+        update_dict = {
+            key: [value[key] for value in self.functional_test_results]
+            for key in tvac_columns if key in self.functional_test_results[0]
+        }
+        try:
+            date = datetime.strptime(self.test_id, "%Y_%m_%d_%H-%M-%S").date()
+        except Exception as e:
+            print(f"Error parsing date: {str(e)}")
+            date = datetime.now().date()
+
+        tvac_entry = FMSTvac(**update_dict, fms_id=self.selected_fms_id,
+                            test_id=self.test_id, date=date, remark=self.remark)
+        session.add(tvac_entry)
+        return tvac_entry
+
+    def _update_fms_status(self, session: "Session"):
+        fms_main = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
+        if fms_main and fms_main.status not in [
+            FMSProgressStatus.SHIPMENT,
+            FMSProgressStatus.DELIVERED,
+            FMSProgressStatus.SCRAPPED
+        ]:
+            fms_main.status = FMSProgressStatus.TVAC_COMPLETED
 
     def allocate_components(self, session: "Session", fms_entry: FMSMain, component_dict: dict) -> None:
         """
