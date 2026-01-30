@@ -10,7 +10,7 @@ from pathlib import Path
 # Third-party
 from tqdm import tqdm
 from sqlalchemy import create_engine, inspect
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 
 # Local packages – database models
 from .db import (
@@ -329,9 +329,11 @@ class FMSDataStructure:
             operator = ["JKR", "NRN"]
             
             for anode_path, cathode_path, tester in zip(anode_paths, cathode_paths, operator):
-                self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_path, cathode_path=cathode_path, operator = tester, tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
+                self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_path, cathode_path=cathode_path,\
+                                                    operator = tester, tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
         else:
-            self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_fr_path, cathode_path=cathode_fr_path, tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
+            self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_fr_path, cathode_path=cathode_fr_path,\
+                                                tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
 
     def get_all_certifications(self, local_certifications: str = "") -> None:
         """
@@ -616,90 +618,199 @@ class FMSDataStructure:
         """
         if not tv_test_path:
             tv_test_path = self.tv_test_path
-        session = self.Session()
+
+        session: "Session" = self.Session()
+
         for folder in os.listdir(tv_test_path):
+            full_folder: str = os.path.join(tv_test_path, folder)
 
-            full_folder = os.path.join(tv_test_path, folder)
-            if os.path.isdir(full_folder) and "test valve #" in folder.lower():
-                # Extract TV number
-                tv_id = int(folder.split("#")[-1].strip().split(" ")[0])
+            if not self._is_tv_test_folder(full_folder, folder):
+                continue
 
-                tv_sql = TVLogicSQL(session=session, fms=self)
+            tv_id: int = self._extract_tv_id(folder)
+            tv_sql: TVLogicSQL = TVLogicSQL(session=session, fms=self)
 
-                # Collect all .xls files in this folder
-                test_files = [os.path.join(full_folder, f)
-                              for f in os.listdir(full_folder)
-                              if f.lower().endswith('.xls') and 'quench' not in f.lower()]
+            test_files: list[str] = self._collect_tv_test_files(full_folder)
+            welded_date = self._get_welded_date(session, tv_id)
 
-                # Check for subfolders and collect their .xls files
-                for subfolder in os.listdir(full_folder):
-                    full_subfolder = os.path.join(full_folder, subfolder)
-                    if os.path.isdir(full_subfolder):
-                        test_files.extend([os.path.join(full_subfolder, f)
-                                           for f in os.listdir(full_subfolder)
-                                           if f.lower().endswith('.xls') and 'quench' not in f.lower()])
+            parsed_tests = self._parse_and_sort_tests(test_files)
 
-                # Get welded date from certification if available
-                cert_check = session.query(TVCertification).filter_by(tv_id=tv_id, part_name=TVParts.WELD.value).first()
-                welded_date = cert_check.date if cert_check else None
+            (
+                status_entry,
+                status_welded,
+                half_index,
+            ) = self._get_weld_split_info(session, tv_id, welded_date, parsed_tests)
 
-                # Sort test files by date extracted from filename
-                parsed_tests = []
-                for test_file in test_files:
-                    test_reference = os.path.basename(test_file).split('_LP_')[0]
-                    try:
-                        test_date = datetime.strptime(test_reference, "%Y_%m_%d_%H-%M-%S").date()
-                        parsed_tests.append((test_date, test_file, test_reference))
-                    except Exception as e:
-                        print(f"Error parsing date from {test_reference}: {str(e)}")
+            last_pre_weld_opening_temp: float | None = None
+            last_opening_temp: float | None = None
 
-                parsed_tests.sort(key=lambda x: x[0])
+            for idx, (test_date, test_file, test_reference) in enumerate(parsed_tests):
+                (
+                    last_opening_temp,
+                    last_pre_weld_opening_temp,
+                ) = self._process_single_tv_test(
+                    session=session,
+                    tv_sql=tv_sql,
+                    tv_id=tv_id,
+                    idx=idx,
+                    test_date=test_date,
+                    test_file=test_file,
+                    test_reference=test_reference,
+                    welded_date=welded_date,
+                    status_welded=status_welded,
+                    half_index=half_index,
+                    last_opening_temp=last_opening_temp,
+                    last_pre_weld_opening_temp=last_pre_weld_opening_temp,
+                )
 
-                last_pre_weld_opening_temp = None
-                last_opening_temp = None
-
-                # If welded_date is None, check status entry to split tests in half if welded=True
-                status_entry = session.query(TVStatus).filter_by(tv_id=tv_id).first()
-                status_welded = status_entry.welded if status_entry else False
-                half_index = None
-                if not welded_date and len(parsed_tests) > 1:
-                    half_index = len(parsed_tests) // 2
-
-                for idx, (test_date, test_file, test_reference) in enumerate(parsed_tests):
-                    test_check = session.query(TVTestRuns).filter_by(tv_id=tv_id, test_reference=test_reference).first()
-                    if test_check:
-                        last_opening_temp = test_check.opening_temp
-                        continue
-
-                    tv_data = TVData(test_results_file=test_file)
-                    update = tv_data.extract_tv_test_results_from_excel()
-                    if not update:
-                        continue
-
-                    if welded_date:
-                        welded = test_date >= welded_date.date()
-                    else:
-                        if half_index is not None and status_welded:
-                            welded = idx >= half_index
-                        elif status_welded == False:
-                            welded = False
-
-                    tv_sql.tv_id = tv_id
-                    tv_sql.tv_test_reference = test_reference
-                    tv_sql.tv_welded = welded
-                    tv_sql.update_tv_test_results(tv_data)
-
-                    if not welded:
-                        last_pre_weld_opening_temp = tv_data.opening_temperature
-                    last_opening_temp = tv_data.opening_temperature
-
-                if status_entry:
-                    if last_opening_temp is not None:
-                        status_entry.opening_temp = last_opening_temp
-                    if last_pre_weld_opening_temp is not None:
-                        status_entry.pre_weld_opening_temp = last_pre_weld_opening_temp
+            self._update_tv_status_entry(
+                status_entry,
+                last_opening_temp,
+                last_pre_weld_opening_temp,
+            )
 
         session.commit()
+
+
+    def _is_tv_test_folder(self, full_folder: str, folder: str) -> bool:
+        return os.path.isdir(full_folder) and "test valve #" in folder.lower()
+
+
+    def _extract_tv_id(self, folder: str) -> int:
+        return int(folder.split("#")[-1].strip().split(" ")[0])
+
+
+    def _collect_tv_test_files(self, full_folder: str) -> list[str]:
+        test_files: list[str] = [
+            os.path.join(full_folder, f)
+            for f in os.listdir(full_folder)
+            if f.lower().endswith(".xls") and "quench" not in f.lower()
+        ]
+
+        for subfolder in os.listdir(full_folder):
+            full_subfolder: str = os.path.join(full_folder, subfolder)
+            if os.path.isdir(full_subfolder):
+                test_files.extend(
+                    [
+                        os.path.join(full_subfolder, f)
+                        for f in os.listdir(full_subfolder)
+                        if f.lower().endswith(".xls") and "quench" not in f.lower()
+                    ]
+                )
+
+        return test_files
+
+
+    def _get_welded_date(self, session: "Session", tv_id: int):
+        cert_check = (
+            session.query(TVCertification)
+            .filter_by(tv_id=tv_id, part_name=TVParts.WELD.value)
+            .first()
+        )
+        return cert_check.date if cert_check else None
+
+
+    def _parse_and_sort_tests(
+        self, test_files: list[str]
+    ) -> list[tuple[datetime.date, str, str]]:
+        parsed_tests: list[tuple[datetime.date, str, str]] = []
+
+        for test_file in test_files:
+            test_reference: str = os.path.basename(test_file).split("_LP_")[0]
+            try:
+                test_date = datetime.strptime(
+                    test_reference, "%Y_%m_%d_%H-%M-%S"
+                ).date()
+                parsed_tests.append((test_date, test_file, test_reference))
+            except Exception as e:
+                print(f"Error parsing date from {test_reference}: {str(e)}")
+
+        parsed_tests.sort(key=lambda x: x[0])
+        return parsed_tests
+
+
+    def _get_weld_split_info(
+        self,
+        session: "Session",
+        tv_id: int,
+        welded_date,
+        parsed_tests: list[tuple],
+    ) -> tuple["TVStatus | None", bool, int | None]:
+        status_entry = session.query(TVStatus).filter_by(tv_id=tv_id).first()
+        status_welded: bool = status_entry.welded if status_entry else False
+
+        half_index: int | None = None
+        if not welded_date and len(parsed_tests) > 1:
+            half_index = len(parsed_tests) // 2
+
+        return status_entry, status_welded, half_index
+
+
+    def _process_single_tv_test(
+        self,
+        session: "Session",
+        tv_sql: "TVLogicSQL",
+        tv_id: int,
+        idx: int,
+        test_date,
+        test_file: str,
+        test_reference: str,
+        welded_date,
+        status_welded: bool,
+        half_index: int | None,
+        last_opening_temp: float | None,
+        last_pre_weld_opening_temp: float | None,
+    ) -> tuple[float | None, float | None]:
+
+        test_check = (
+            session.query(TVTestRuns)
+            .filter_by(tv_id=tv_id, test_reference=test_reference)
+            .first()
+        )
+
+        if test_check:
+            return test_check.opening_temp, last_pre_weld_opening_temp
+
+        tv_data = TVData(test_results_file=test_file)
+        update: bool = tv_data.extract_tv_test_results_from_excel()
+        if not update:
+            return last_opening_temp, last_pre_weld_opening_temp
+
+        if welded_date:
+            welded: bool = test_date >= welded_date.date()
+        else:
+            if half_index is not None and status_welded:
+                welded = idx >= half_index
+            elif status_welded is False:
+                welded = False
+
+        tv_sql.tv_id = tv_id
+        tv_sql.tv_test_reference = test_reference
+        tv_sql.tv_welded = welded
+        tv_sql.update_tv_test_results(tv_data)
+
+        if not welded:
+            last_pre_weld_opening_temp = tv_data.opening_temperature
+
+        last_opening_temp = tv_data.opening_temperature
+
+        return last_opening_temp, last_pre_weld_opening_temp
+
+
+    def _update_tv_status_entry(
+        self,
+        status_entry: "TVStatus | None",
+        last_opening_temp: float | None,
+        last_pre_weld_opening_temp: float | None,
+    ) -> None:
+        if not status_entry:
+            return
+
+        if last_opening_temp is not None:
+            status_entry.opening_temp = last_opening_temp
+
+        if last_pre_weld_opening_temp is not None:
+            status_entry.pre_weld_opening_temp = last_pre_weld_opening_temp
 
     def add_hpiv_data(self, hpiv_data_packages: str = "", output_folder: str = "") -> None:
         """
@@ -765,11 +876,11 @@ class FMSDataStructure:
             fms_status_path = self.fms_status_path
     
         main_files = [os.path.join(fms_main_files, f) for f in os.listdir(fms_main_files) if f.lower().endswith('.pdf')]
-        for main in main_files:
-            fms_data = FMSData(pdf_file=main, status_file=fms_status_path)
-            fms_data.extract_FMS_test_results()
-            self.fms_sql.add_fms_assembly_data(fms_data)
-            self.fms_sql.update_fms_main_test_results(fms_data)
+        for main_file in main_files:
+            self.fms_sql.pdf_file = main_file
+            self.fms_sql.status_file = fms_status_path
+            self.fms_sql.extract_FMS_test_results()
+            self.fms_sql.update_fms_main_test_results(update_assembly_data=True, automated_entry=True)
 
     def add_fms_functional_test_data(self, test_path: str = "", fms_ids: list[str] = []) -> None:
         """

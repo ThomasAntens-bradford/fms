@@ -3151,15 +3151,46 @@ class FMSLogicSQL(FMSData, FMSListener):
 
         return LimitStatus.TRUE
 
-    def update_fms_main_test_results(self) -> None:
+    def update_fms_main_test_results(self, report_pdf_file: str = "", update_assembly_data: bool = False, automated_entry: bool = False) -> None:
         """
-        Updates the FMS main test results in the database.
+        This method extracts FMS test results from a PDF report or uses existing results,
+        processes them, and stores them in the database. It handles parameter validation,
+        limit checking, and database transaction management.
+        Args:
+            report_pdf_file (str, optional): Path to the FMS acceptance test report PDF file.
+                If provided and valid, test results will be extracted from it. Defaults to "".
+            update_assembly_data (bool, optional): If True, FMS assembly data will be added
+                to the database before updating test results. Defaults to False.
+            automated_entry (bool, optional): If True, marks the database entry as automatically
+                created. Defaults to False.
+        Returns:
+            None
+        Raises:
+            No exceptions are raised; errors are caught and logged to console.
+        Side Effects:
+            - Extracts FMS test results from PDF if not already loaded
+            - Modifies database records (deletes existing test results for the FMS ID, adds new ones)
+            - Prints diagnostic messages to console on error or missing data
+            - Rolls back database transaction on exception
+        Notes:
+            - Requires self.fms_main_test_results to be populated either via extraction or parameter
+            - Requires self.component_serials to contain a valid 'fms_id' key
+            - Power budget parameters are handled differently from other parameters
+            - NaN values are skipped and not stored in the database
         """
-        automated_entry = False
         test_results: dict[str, dict] = self.fms_main_test_results
         self.component_serials = self.component_serials
-        automated_entry = True
         session = None
+        if not hasattr(self, "fms_main_test_results") or not self.fms_main_test_results:
+            if report_pdf_file and os.path.exists(report_pdf_file):
+                self.pdf_file = report_pdf_file
+                self.extract_FMS_test_results()
+            else:
+                print("Either provide the (valid) report pdf filepath or use the 'listen_for_fms_acceptance_reports' function to obtain the test results of an FMS acceptance test report.")
+                return
+            
+        if update_assembly_data:
+            self.add_fms_assembly_data()
         try:
             try:
                 session = self.Session()
