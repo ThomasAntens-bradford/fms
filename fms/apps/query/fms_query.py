@@ -20,13 +20,14 @@ from datetime import datetime
 import io
 
 # Local Imports
-from fms import FMSDataStructure
+from ... import FMSDataStructure
 from fms.utils.general_utils import (
     display_df_in_chunks,
     find_intersections,
     get_slope, 
+    field
 )
-from fms.utils.enums import (
+from ...utils.enums import (
     FMSParts, 
     FunctionalTestType, 
     LimitStatus,
@@ -38,18 +39,22 @@ from .tv_query import TVQuery
 from .manifold_query import ManifoldQuery
 from .hpiv_query import HPIVQuery
 
-from fms.db import (
+from ...db import (
     FMSMain,
     FMSFRTests, 
     FMSTestResults, 
     FMSFunctionalTests, 
     FMSTvac, 
     FMSFunctionalResults, 
-    ManifoldStatus
+    ManifoldStatus,
+    AnodeFR,
+    CathodeFR,
+    LPTCalibration
 )
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
+from tqdm import tqdm
 
 class FMSQuery:
     """
@@ -150,7 +155,7 @@ class FMSQuery:
         Plot TV data of the closed loop test.
     """
 
-    def __init__(self, session: "Session" = None, local: bool = True, lpt_pressures = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.4], max_opening_response: float = 300, max_response: float = 60,
+    def __init__(self, session: "Session" = None, local: bool = True, fms_id: str = None, lpt_pressures = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.4], max_opening_response: float = 300, max_response: float = 60,
                  lpt_voltages: list[float] = [10, 15, 17, 20, 24, 25, 30, 35], min_flow_rates: list[float] = [0.61, 1.23, 1.51, 1.85, 2.40, 2.43, 3.13, 3.72], 
                  max_flow_rates: list[float] = [0.96, 1.61, 1.9, 2.34, 2.93, 3.07, 3.81, 4.54], range12_low: list[float] = [13, 41], range24_low: list[float] = [19, 54],
                  range12_high: list[float] = [25, 95], range24_high: list[float] = [35, 140], initial_flow_rate: float = 0.1, lpt_set_points: list[float] = [1, 1.625, 2.25, 1.625, 1, 0.2]):
@@ -170,7 +175,6 @@ class FMSQuery:
         self.range12_high: list[int] = range12_high
         self.range24_high: list[int] = range24_high
         self.fms_entry: None | FMSMain = None
-        self.fms_id: None | int = None
         self.functional_tests_list: list = []
         self.fr_tests_list: list = []
         self.tvac_tests_list: list = []
@@ -179,55 +183,93 @@ class FMSQuery:
         self.max_opening_response = max_opening_response
         self.max_response = max_response
         self.grouped_functional_tests: dict[str, dict[str, list[FMSFunctionalTests]]] = {}
+        self._fr_voltage_order = 3
+        self._fms_id = fms_id
+        self._listeners = []
+        self.fr_tests_loaded = set()
+        self.functional_fms_id = None
 
-    def load_all_tests(self, fms_id):
+        if self.fms_id:
+            self.fms_entry = self.session.query(FMSMain).filter_by(fms_id = self.fms_id).first()
+
+    def add_listener(self, callback):
+        self._listeners.append(callback)
+
+    def _notify(self, new_value):
+        for callback in self._listeners:
+            callback(new_value)
+
+    @property
+    def fr_voltage_order(self):
+        return self._fr_voltage_order
+
+    @fr_voltage_order.setter
+    def fr_voltage_order(self, new_value):
+        if new_value != self._fr_voltage_order:
+            self._fr_voltage_order = new_value
+            self._notify(new_value)
+
+    @property
+    def fms_id(self):
+        return self._fms_id
+    
+    @fms_id.setter
+    def fms_id(self, new_value):
+        if new_value != self._fms_id:
+            self.fms_entry = self.session.query(FMSMain).filter_by(fms_id = new_value).first()
+            self.load_all_tests()
+
+    def load_all_tests(self, fms_id: str = None):
         """
         Load all test lists for the given FMS ID and store them as attributes.
         """
-        self.fms_entry = self.session.query(FMSMain).filter_by(fms_id=fms_id).first()
-        if not fms_id or not self.fms_entry:
-            self.functional_tests_list = []
-            self.fr_tests_list = []
-            self.tvac_tests_list = []
-            return
-        self.functional_tests_list: list[FMSFunctionalTests] = self.fms_entry.functional_tests
-        self.fr_tests_list: list[FMSFRTests] = self.fms_entry.fr_tests
-        self.tvac_tests_list: list[FMSTvac] = self.fms_entry.tvac_results
+        if fms_id and self.fms_id and not self.fms_id == fms_id:
+            self.fms_id = fms_id
+        if self.fms_entry:
+            self.functional_tests_list: list[FMSFunctionalTests] = self.fms_entry.functional_tests
+            self.fr_tests_list: list[FMSFRTests] = self.fms_entry.fr_tests
+            self.tvac_tests_list: list[FMSTvac] = self.fms_entry.tvac_results
+            self.functional_fms_id = fms_id
 
-    def get_open_loop_tests(self) -> list[FMSFunctionalTests]:
+    def get_open_loop_tests(self, fms_id) -> list[FMSFunctionalTests]:
         """
         Return filtered functional tests corresponding to open loop tests.
         """
+        self.load_all_tests(fms_id)
         return [i for i in getattr(self, "functional_tests_list", [])
                 if i.test_type in (FunctionalTestType.HIGH_OPEN_LOOP,
                                 FunctionalTestType.LOW_OPEN_LOOP)]
     
-    def get_slope_tests(self) -> list[FMSFunctionalTests]:
+    def get_slope_tests(self, fms_id) -> list[FMSFunctionalTests]:
         """
         Return filtered functional tests corresponding to slope tests.
         """
+        self.load_all_tests(fms_id)
         return [i for i in getattr(self, "functional_tests_list", [])
                 if i.test_type in (FunctionalTestType.HIGH_SLOPE,
                                 FunctionalTestType.LOW_SLOPE)]
 
-    def get_closed_loop_tests(self) -> list[FMSFunctionalTests]:
+    def get_closed_loop_tests(self, fms_id) -> list[FMSFunctionalTests]:
         """
         Return filtered functional tests corresponding to closed loop tests.
         """
+        self.load_all_tests(fms_id)
         return [i for i in getattr(self, "functional_tests_list", [])
                 if i.test_type in (FunctionalTestType.HIGH_CLOSED_LOOP,
                                 FunctionalTestType.LOW_CLOSED_LOOP)]
 
-    def get_fr_tests(self) -> list[FMSFRTests]:
+    def get_fr_tests(self, fms_id) -> list[FMSFRTests]:
         """
         Return filtered FR characteristic tests.
         """
+        self.load_all_tests(fms_id)
         return getattr(self, "fr_tests_list", [])
 
-    def get_tvac_tests(self) -> list[FMSTvac]:
+    def get_tvac_tests(self, fms_id) -> list[FMSTvac]:
         """
         Return filtered TVAC cycle tests.
         """
+        self.load_all_tests(fms_id)
         return getattr(self, "tvac_tests_list", [])
 
     def fms_query_field(self):
@@ -289,30 +331,30 @@ class FMSQuery:
                 return lambda: display_with_remark(lambda: self.fms_characteristics_query())
             
             elif test_type == 'Slope Test':
-                test_run = next(i for i in self.fms_entry.functional_tests if i.test_id == self.test_dict.get(dynamic_field.value))
+                test_run = next(i for i in self.fms_entry.functional_tests if i.test_id == dynamic_field.value)
                 return lambda: display_with_remark(
-                    lambda: self.open_loop_test_query(self.test_dict.get(dynamic_field.value), test_type='slope'),
+                    lambda: self.open_loop_test_query(test_run = test_run, test_type='slope'),
                     test_run, FMSFunctionalTests
                 )
 
             elif test_type == 'Open Loop Test':
-                test_run = next(i for i in self.fms_entry.functional_tests if i.test_id == self.test_dict.get(dynamic_field.value))
+                test_run = next(i for i in self.fms_entry.functional_tests if i.test_id == dynamic_field.value)
                 return lambda: display_with_remark(
-                    lambda: self.open_loop_test_query(self.test_dict.get(dynamic_field.value), test_type='open_loop'),
+                    lambda: self.open_loop_test_query(test_run = test_run, test_type='open_loop'),
                     test_run, FMSFunctionalTests
                 )
 
             elif test_type == 'Closed Loop Test':
                 test_run = next(i for i in self.fms_entry.functional_tests if i.test_id == self.test_dict.get(dynamic_field.value))
                 return lambda: display_with_remark(
-                    lambda: self.closed_loop_test_query(self.test_dict.get(dynamic_field.value)),
+                    lambda: self.closed_loop_test_query(test_run = test_run),
                     test_run, FMSFunctionalTests
                 )
 
             elif test_type == 'FR Characteristics':
                 test_run = next(i for i in self.fms_entry.fr_tests if i.test_id == self.test_dict.get(dynamic_field.value))
                 return lambda: display_with_remark(
-                    lambda: self.fr_test_query(self.test_dict.get(dynamic_field.value)),
+                    lambda: self._plot_fr_results(test_run = test_run),
                     test_run, FMSFRTests
                 )
 
@@ -335,7 +377,12 @@ class FMSQuery:
         # --- Listeners ---
         def on_fms_change(change: dict) -> None:
             if change['type'] == 'change' and change['name'] == 'value':
-                self.load_all_tests(fms_id=change['new']) if not self.fms_id else self.load_all_tests(self.fms_id)
+                self.fms_id = fms_field.value
+                if not self.fms_entry:
+                    with output:
+                        output.clear_output()
+                        print("The selected FMS does not have any data in the database.")
+                        return
                 with output:
                     output.clear_output(wait=True)
                     self.fms_status()
@@ -352,10 +399,9 @@ class FMSQuery:
                 test_type = change['new']
 
                 if test_type == 'Open Loop Test':
-                    filtered = self.get_open_loop_tests()
-                    test_headers = [f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]" for i in filtered]
+                    filtered = self.get_open_loop_tests(self.fms_id)
+                    test_headers = [(f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]", i.test_id) for i in filtered]
                     dynamic_field.options = test_headers
-                    self.test_dict = {h: i.test_id for h, i in zip(test_headers, filtered)}
                     dynamic_field.description = "Select Test:" if filtered else "No Open Loop Tests Found"
 
                 elif test_type == "Acceptance Test":
@@ -366,27 +412,25 @@ class FMSQuery:
                         self.fms_characteristics_query()
 
                 elif test_type == 'Slope Test':
-                    filtered = self.get_slope_tests()
-                    test_headers = [f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]" for i in filtered]
+                    filtered = self.get_slope_tests(self.fms_id)
+                    test_headers = [(f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]", i.test_id) for i in filtered]
                     dynamic_field.options = test_headers
-                    self.test_dict = {h: i.test_id for h, i in zip(test_headers, filtered)}
                     dynamic_field.description = "Select Test:" if filtered else "No Slope Tests Found"
 
                 elif test_type == 'Closed Loop Test':
-                    filtered = self.get_closed_loop_tests()
-                    test_headers = [f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]" for i in filtered]
+                    filtered = self.get_closed_loop_tests(self.fms_id)
+                    test_headers = [(f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]", i.test_id) for i in filtered]
                     dynamic_field.options = test_headers
-                    self.test_dict = {h: i.test_id for h, i in zip(test_headers, filtered)}
                     dynamic_field.description = "Select Test:" if filtered else "No Closed Loop Tests Found"
 
                 elif test_type == 'FR Characteristics':
-                    filtered = self.get_fr_tests()
-                    test_headers = [f"{t.test_id} {t.inlet_pressure} [barA]" for t in filtered]
+                    filtered = self.get_fr_tests(self.fms_id)
+                    test_headers = [(f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]", i.test_id) for i in filtered]
                     dynamic_field.options = test_headers
-                    self.test_dict = {h: t.test_id for h, t in zip(test_headers, filtered)}
                     dynamic_field.description = "Select Test:" if filtered else "No FR Tests Found"
 
                 elif test_type == 'Tvac Cycle':
+                    self.get_tvac_tests(self.fms_id)
                     try:
                         dynamic_field.options = [[t.test_id for t in self.tvac_tests_list][0]]
                     except:
@@ -399,7 +443,7 @@ class FMSQuery:
                     dynamic_field.description = "Select Part:"
 
                 elif test_type == 'FMS Trend Analysis':
-                    dynamic_field.options = ['TV Slope Analysis', 'Flow Rate Analysis', 'Closed Loop Analysis', 'Free Choice']
+                    dynamic_field.options = ['TV Slope Analysis', 'Flow Rate Analysis', 'Closed Loop Analysis', 'FR Match Analysis', 'Free Choice']
                     dynamic_field.description = "Analysis Type:"
 
                 else:  # Status
@@ -428,10 +472,7 @@ class FMSQuery:
 
         # --- Run default status ---
         if fms_field.value:
-            self.load_all_tests(fms_id=fms_field.value)
-            with output:
-                output.clear_output(wait=True)
-                self.fms_status()
+            on_fms_change(change = {"type": "change", "name": "value"})
 
     def fms_status(self) -> None:
         """
@@ -508,24 +549,41 @@ class FMSQuery:
 
         submit_button.on_click(on_submit_clicked)
 
-    def fr_test_query(self, test_id: str, plot: bool = True) -> io.BytesIO | None:
+    def _plot_fr_results(self, test_id: str) -> None:
+        """
+        Helper function to plot both the main FR characteristics as well as the LPT voltage plot.
+        
+        :param test_id: Identifier of the test run.
+        :type test_id: str
+        """
+        self.plot_fr_characteristics(test_id = test_id, fms_id = self.fms_id)
+        self.plot_fr_voltage(test_id = test_id, fms_id = self.fms_id)
+
+    def fr_test_query(self, test_id: str, fms_id: str) -> None:
         """
         Query and plot FR characteristic test data for the given test ID.
         Args:
             test_id (str): The ID of the FR test to query.
             plot (bool): Whether to display the plot or return it as a BytesIO object.
-        Returns:
-            BytesIO: The plot image in a BytesIO object if plot is False.
+            get_table (bool): Whether to return only the table containing the relevant data.
         """
-        test_runs: list[FMSFRTests] = self.fms_entry.fr_tests
+        # if not test_id in self.fr_tests_loaded:
+        #     self.fr_tests_loaded.add(test_id)
+        # else:
+        #     return
+        fms_entry = self.session.query(FMSMain).filter_by(fms_id = fms_id).first()
+        if not fms_entry:
+            print(f"No FMS entry found for FMS {fms_id}")
+            return
+        test_runs: list[FMSFRTests] = fms_entry.fr_tests
         test_run: FMSFRTests = next((tr for tr in test_runs if tr.test_id == test_id), None)
         self.intersections = {}
         if not test_run:
             print("Test ID not found for this FMS.")
             return
         else:
-            self.gas_type = self.fms_entry.gas_type if self.fms_entry else 'Xe'
-            manifold: list[ManifoldStatus] = self.fms_entry.manifold
+            self.gas_type = fms_entry.gas_type if fms_entry else 'Xe'
+            manifold: list[ManifoldStatus] = fms_entry.manifold if fms_entry else None
             if manifold:
                 self.ratio = manifold[0].ac_ratio_specified
             else:
@@ -549,26 +607,38 @@ class FMSQuery:
             self.total_flow = test_run.total_flow
             self.lpt_pressure = test_run.lpt_pressure
             self.lpt_voltage = test_run.lpt_voltage
-            self.ac_ratio = test_run.ac_ratio
-    
+            self.lpt_temp = test_run.lpt_temp
+            self.ac_ratio = np.array(self.anode_flow)/np.array(self.cathode_flow)
             self.intersections = find_intersections(self.lpt_voltage, self.total_flow, self.lpt_voltages, self.min_flow_rates, self.max_flow_rates)
+        return fms_entry
 
-            image = self.plot_fr_characteristics(serial = self.fms_entry.fms_id, gas_type = self.gas_type, plot=plot)
-            return image
-
-    def plot_fr_characteristics(self, gas_type: str = 'Xe', serial: str = '25-050', plot: bool = True) -> io.BytesIO | None:
+    def plot_fr_characteristics(self, fms_id: str = "", test_id: str = "", plot: bool = True, get_table: bool = False) -> io.BytesIO | list[dict[str, list[Any]]] | None:
         """
         Plot FR characteristics for the given gas type and serial number.
 
         Args:
-            gas_type (str): The type of gas used in the test (default is 'Xe').
-            serial (str): The serial number of the FMS (default is '25-050').
+            test_id (str): Test Identifier of the test that is to be queried.
             plot (bool): Whether to display the plot or return it as a BytesIO object.
+            get_table (bool): Whether to return the data corresponding to the test.
         Returns:
             BytesIO: The plot image in a BytesIO object if plot is False.
+            list: The data corresponding to the test.
         """
         
-        fig, ax1 = plt.subplots(figsize=(9, 5))
+        fms_entry: FMSMain = self.fr_test_query(test_id, fms_id=fms_id)
+        if not fms_entry:
+            return []
+
+        column_mapping = {
+            "Inlet Pressure [barA]": "pressure",
+            f"Anode Flow \n Restrictor Flow Rate [mg/s {self.gas_type}]": "flow_a",
+            f"Cathode Flow \n Restrictor Flow Rate [mg/s {self.gas_type}]": "flow_c",
+            "Anode-to-Cathode Ratio [13 +/- 0.5]": "ac_ratio",
+            f"Total Flow Rate [mg/s {self.gas_type}]": "tot_flow",
+            "LPT Pressure [mV]": "lpt_voltage"
+        }
+        serial = fms_entry.fms_id
+        gas_type = fms_entry.gas_type
 
         df_data = {
             "Inlet Pressure [barA]": self.lpt_pressure,
@@ -578,6 +648,13 @@ class FMSQuery:
             f"Total Flow Rate [mg/s {self.gas_type}]": [f"{i:.3f}" for i in self.total_flow],
             "LPT Pressure [mV]": [f"{i:.2f}" for i in self.lpt_voltage]
         }
+        fr_data = []
+        if get_table:
+            for idx in range(len(self.lpt_pressure)):
+                row = {column_mapping[key]: value[idx] for key, value in df_data.items()}
+                fr_data.append(row)
+
+        fig, ax1 = plt.subplots(figsize=(9, 5))
 
         df = pd.DataFrame(df_data)
         df = df.to_html(index=False)
@@ -620,16 +697,32 @@ class FMSQuery:
             fig.savefig(buf, format='png', bbox_inches='tight')
             plt.close(fig)
             buf.seek(0)
-            return buf
-        self.plot_fr_voltage(title=title, gas_type=gas_type)
+            return buf, fr_data
+        
+    def plot_fr_voltage(self, fms_id: str = "", test_id: str = "", initial_order: int = 3, plot: bool = True, listen_order: bool = False) -> io.BytesIO | list[dict[str, Any]]:
+        """
+        Plots the FR characteristics test against the LPT voltage (pressure), comparing the data to the specifications.
+        
+        :param test_id: Test Identifier
+        :type test_id: str
+        :param initial_order: Order to use to fit the flow data.
+        :type initial_order: int
+        :param plot: Whether to plot the data or to return the plot as an image in bytes.
+        :type plot: bool
+        :param listen_order: Whether to update the polynomial order to the class attribute "_fr_voltage_order".
+        :type listen_order: bool
+        :return: The image in memory of the plot and the corresponding data in list of rows format.
+        :rtype: BytesIO | list[dict[str, Any]]
+        """
+        fms_entry: FMSMain = self.fr_test_query(test_id, fms_id=fms_id)
+        if not fms_entry:
+            return []
 
-    def plot_fr_voltage(self, title: str = None, gas_type: str = 'Xe') -> None:
-        """
-        Plot FR characteristics vs LPT voltage with interactive polynomial order selection.
-        """
+        serial = fms_entry.fms_id
+        gas_type = fms_entry.gas_type
         description = widgets.HTML("<h3>FR Characteristics Extrapolation Analysis</h3>")
         poly_order_widget = widgets.IntSlider(  
-            value=3,
+            value=initial_order,
             min=1,
             max=20,
             step=1,
@@ -643,7 +736,13 @@ class FMSQuery:
             description,
             poly_order_widget
         ], layout=widgets.Layout(padding='12px', width='fit-content'))
-        display(form)
+        if plot:
+            display(form)
+
+        title = (
+            f'{gas_type} LP FMS - SN {serial} - {self.inlet_pressure} [barA] Inlet Pressure - {self.outlet_pressure} [mbar] Outlet Pressure'
+            f' - TRP at {self.temperature} [degC] - Pvac <1E-1 [mbar]'
+        )
 
         # Output widgets
         plot_output = widgets.Output()
@@ -652,7 +751,16 @@ class FMSQuery:
         # Single HBox to hold plot + table
         data_widget = widgets.HBox([plot_output, df_widget],
                                 layout=widgets.Layout(align_items='center', gap='20px'))
-        display(data_widget)
+        if plot:
+            display(data_widget)
+
+        column_mapping = {
+            'LPT Voltage [mV]': "lpt_voltage",
+            f'Min Flow Rate [mg/s {gas_type}]': "min_flow",
+            f'Max Flow Rate [mg/s {gas_type}]': "max_flow",
+            f'Calculated Total Flow [mg/s {gas_type}]': "tot_flow_raw",
+            'Compliance': "comp"
+        }
 
         def on_poly_order_change(change: dict) -> None:
             order = change['new']
@@ -662,8 +770,8 @@ class FMSQuery:
 
             # Compute R²
             r2 = r2_score(self.total_flow, total_flow_check)
-
-            df = pd.DataFrame({
+            
+            df_data = {
                 'LPT Voltage [mV]': self.lpt_voltages,
                 f'Min Flow Rate [mg/s {gas_type}]': self.min_flow_rates,
                 f'Max Flow Rate [mg/s {gas_type}]': self.max_flow_rates,
@@ -672,7 +780,8 @@ class FMSQuery:
                     'C' if min_f <= calc_f <= max_f else 'F'
                     for min_f, max_f, calc_f in zip(self.min_flow_rates, self.max_flow_rates, calculated_total_flows)
                 ]
-            })
+            }
+            df = pd.DataFrame(df_data)
 
             # Define the styling function
             def style_total_flow(row):
@@ -699,7 +808,7 @@ class FMSQuery:
 
             with plot_output:
                 plot_output.clear_output()
-                fig, ax1 = plt.subplots(figsize=(9,7))
+                fig, ax1 = plt.subplots(figsize=(9, 6))
                 l3, = ax1.plot(self.lpt_voltage, self.total_flow, label=f'Total Flow [{self.units[FMSFlowTestParameters.TOTAL_FLOW.value]}]')
                 ax1.set_xlabel('LPT Voltage [mV]')
                 ax1.set_ylabel(f'Mass Flow Rate [{self.units[FMSFlowTestParameters.ANODE_FLOW.value]} {gas_type}]')
@@ -709,7 +818,7 @@ class FMSQuery:
 
                 ax2 = ax1.twinx()
                 l4, = ax2.plot(self.lpt_voltage, self.ac_ratio, color='tab:red', label='Anode/Cathode Ratio')
-                l7, = ax1.plot(self.lpt_voltages, calculated_total_flows, linestyle='--', color='tab:blue', label=f'Calculated Total Flow (R²={r2:.2f})')
+                l7, = ax1.plot(self.lpt_voltages, calculated_total_flows, linestyle='--', color='tab:blue', label=f'Calculated Total Flow (R²={r2:.2f}, p = {order})')
                 l5, = ax1.plot(self.lpt_voltages, self.min_flow_rates, linestyle='--', color='tab:grey', label='Flow Rate Limits')
                 l6, = ax1.plot(self.lpt_voltages, self.max_flow_rates, linestyle='--', color='tab:grey', label='Flow Rate Limits')
                 l5_upper = ax2.axhline(self.ratio + 0.5, color='tab:orange', linestyle='--', label=f'Ratio Tolerance: {self.ratio}')
@@ -729,12 +838,28 @@ class FMSQuery:
                 labels = [line.get_label() for line in lines]
                 ax1.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2)
                 plt.tight_layout()
-                plt.show()
+                if listen_order:
+                    self.fr_voltage_order = order
+                if plot:
+                    plt.show()
+                else:
+                    buf = io.BytesIO()
+                    fig.savefig(buf, format='png', bbox_inches='tight')
+                    plt.close(fig)
+                    buf.seek(0)
+                    voltage_data = []
+                    for idx in range(len(self.lpt_voltages)):
+                        row = {column_mapping[key]: i[idx] for key, i in df_data.items()}
+                        row["tot_flow"] = f"{calculated_total_flows[idx]:.3f}" 
+
+                        voltage_data.append(row)
+
+                    return buf, voltage_data
 
         poly_order_widget.observe(on_poly_order_change, names='value')
-        on_poly_order_change({'new': poly_order_widget.value})
+        return on_poly_order_change({'new': initial_order})
 
-    def open_loop_test_query(self, test_id: str, test_type: str = 'slope', plot: bool = True) -> io.BytesIO | None:
+    def open_loop_test_query(self, test_run: FMSFunctionalTests, test_type: str = 'slope', plot: bool = True) -> io.BytesIO | None:
         """
         Query and plot open loop test data for the given test ID and test type.
         Args:
@@ -744,7 +869,6 @@ class FMSQuery:
         Returns:
             BytesIO: The plot image in a BytesIO object if plot is False.
         """
-        test_run: FMSFunctionalTests | None = next((tr for tr in self.fms_entry.functional_tests if tr.test_id == test_id), None)
         self.tv_slope = None
         if not test_run:
             print("Test ID not found for this FMS.")
@@ -758,7 +882,7 @@ class FMSQuery:
             self.outlet_pressure = test_run.outlet_pressure
             plot_output = widgets.Output()
             correction_checkbox = widgets.Checkbox(
-                value = False,
+                value = True,
                 description = 'Show Inlet Pressure Correction:',
                 indent = False,
                 label_width = '150px'
@@ -807,7 +931,7 @@ class FMSQuery:
                 self.pt1000 = get_values(FMSFlowTestParameters.TV_PT1000.value)
                 self.units = {param: get_unit(param) for param in params}
 
-                image = self.plot_open_loop(serial=self.fms_entry.fms_id, gas_type=self.gas_type, plot=plot)
+                image = self.plot_open_loop(serial=self.fms_entry.fms_id, gas_type=self.gas_type, plot=plot, test_run = test_run)
 
                 def on_correction_change(change: dict):
                     correction = correction_checkbox.value
@@ -827,7 +951,7 @@ class FMSQuery:
                     on_correction_change({})
                 return image
 
-    def get_flow_power_slope(self, flows: list[float], powers: list[float], num_points: int = 300) -> dict:
+    def get_flow_power_slope(self, flows: list[float], powers: list[float], num_points: int = 3000) -> dict:
         """
         Calculate the flow-power slope for specified ranges of flow rates.
         Args:
@@ -855,7 +979,12 @@ class FMSQuery:
             else:
                 end_idx = above_idx[0]
 
-            return power_vals[start_idx:end_idx + 1], flow_vals[start_idx:end_idx + 1]
+            power_segment = power_vals[start_idx:end_idx + 1]
+            flow_segment = flow_vals[start_idx:end_idx + 1]
+            
+            flow_segment = np.clip(flow_segment, lower_bound, upper_bound)
+            
+            return power_segment, flow_segment
 
         def smooth_and_slope(power_segment: np.ndarray, flow_segment: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
             if len(power_segment) < 2 or len(flow_segment) < 2:
@@ -964,7 +1093,7 @@ class FMSQuery:
         except:
             traceback.print_exc()
 
-    def plot_open_loop(self, serial: str ='25-050', gas_type: str ='Xe', plot: bool =True) -> io.BytesIO | None:
+    def plot_open_loop(self, serial: str ='25-050', gas_type: str ='Xe', plot: bool =True, test_run: FMSFunctionalResults = None) -> io.BytesIO | None:
         """
         Plot open loop or slope test data for the given gas type and serial number.
         Args:
@@ -999,7 +1128,7 @@ class FMSQuery:
         else:
             title += f'{max(self.tv_powers):.1f}W, '
 
-        title += f'\nPvac <1E-1 [mbarA], {self.outlet_pressure} [mbar] Outlet Pressure'
+        title += f'\nPvac <1E-1 [mbarA], {self.outlet_pressure} [mbar] Outlet Pressure {test_run.test_id}'
         ax1.set_title(title, wrap=True)
         fig.tight_layout()
 
@@ -1096,16 +1225,16 @@ class FMSQuery:
                     if val == "N/A" or pd.isna(val):
                         return ''
                     if "Opening Time" in desc:
-                        if val < 300:
+                        if val < self.max_opening_response:
                             return 'background-color: green'
-                        elif val == 300:
+                        elif val == self.max_opening_response:
                             return 'background-color: orange'
                         else:
                             return 'background-color: red'
                     else:
-                        if val < 60:
+                        if val < self.max_response:
                             return 'background-color: green'
-                        elif val == 60:
+                        elif val == self.max_response:
                             return 'background-color: orange'
                         else:
                             return 'background-color: red'
@@ -1538,6 +1667,8 @@ class FMSQuery:
             self.flow_rate_analysis(all_fr_tests)
         elif comparison_type == "Closed Loop Analysis":
             self.closed_loop_analysis()
+        elif comparison_type == "FR Match Analysis":
+            self.fr_match_analysis()
         else:
             self.free_fms_analysis(all_main_results)
 
@@ -1723,7 +1854,8 @@ class FMSQuery:
         plt.scatter([current_ratio], [current_slope], color='red', label=f'FMS ID: {self.fms_entry.fms_id}: ({current_ratio:.1f}, {current_slope:.3f})', edgecolors='black')
         plt.axhline(y=min_slope, color='red', linestyle='--', label='Slope Specification')
         plt.axhline(y=max_slope, color='red', linestyle='--')
-        plt.title(f'FMS Flow Rate Analysis - Slope vs Anode/Cathode Ratio\nFMS SN: {self.fms_entry.fms_id}, Inlet Pressure: {inlet_pressure} [barA], \n Outlet Pressure: {outlet_pressure} [mbar], TRP Temp at {temperature} [degC]', wrap=True)
+        plt.title(f'FMS Flow Rate Analysis - Slope vs Anode/Cathode Ratio\nFMS SN: {self.fms_entry.fms_id}, Inlet Pressure: {inlet_pressure} [barA], \n Outlet Pressure: {outlet_pressure} [mbar],'
+                   'TRP Temp at {temperature} [degC]', wrap=True)
         plt.xlabel('Anode/Cathode Ratio')
         plt.ylabel('Flow Rate Slope [mg/s mV^-1]')
         plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2)
@@ -1735,8 +1867,13 @@ class FMSQuery:
         gas_type = self.fms_entry.gas_type
         grouped_functional_tests = self.grouped_functional_tests
         if not grouped_functional_tests:
-            print("No functional tests found in the database.")
-            return
+            self._get_grouped_functional_tests()
+        
+        if not bool(self.grouped_functional_tests):
+            print("No functional tests found")
+            return []
+        
+        grouped_functional_tests = self.grouped_functional_tests
 
         output = widgets.Output()
         test_info = []
@@ -1754,9 +1891,9 @@ class FMSQuery:
         ]
         closed_loop_data = {
             "room_pre_vibration": {"caption": "Table 36: Pre-Vibration, TRP at 22°C, LP FMS Response Time Summary"},
-            FunctionalTestType.HOT: {"caption": "Table 37: TVAC, TRP at 700C, LP FMS Response Time Summary"},
-            FunctionalTestType.COLD: {"caption": "Table 38: TVAC, TRP at -150C, LP FMS Response Time Summary"},
-            FunctionalTestType.ROOM: {"caption": "Table 39: TVAC, TRP at 220C, LP FMS Response Time Summary"},
+            FunctionalTestType.HOT: {"caption": "Table 37: TVAC, TRP at 70°C, LP FMS Response Time Summary"},
+            FunctionalTestType.COLD: {"caption": "Table 38: TVAC, TRP at -15°C, LP FMS Response Time Summary"},
+            FunctionalTestType.ROOM: {"caption": "Table 39: TVAC, TRP at 22°C, LP FMS Response Time Summary"},
         }
         for test_type, temp_groups in grouped_functional_tests.items():
             if "closed_loop" not in test_type.value:
@@ -1782,7 +1919,7 @@ class FMSQuery:
                         table_key = temp_type
 
                     table = closed_loop_data[table_key]
-                    table[pressure_label] = [{} for _ in range(len(self.lpt_set_points))]
+                    table[pressure_label] = [{} for _ in range(len(self.lpt_set_points) + 1)]
 
                     row = {"Temperature [degC]": label_temp, 
                             "Inlet Pressure [barA]": inlet_pressure,
@@ -1793,12 +1930,14 @@ class FMSQuery:
                         row[f"{i+1}_tau [s]"] = tau
                     row["Actual Time [s]"] = opening_times[-1] if opening_times else "N/A"
                     test_info.append(row)
-                    
+                    table_entry = {**table_mapping[0], "time": f'{opening_times[0]:.1f}' if opening_times else "N/A",\
+                                    "limit": self.max_opening_response, "c": "C" if opening_times[0] <= self.max_opening_response else "F"}
+                    table[pressure_label][0] = table_entry
                     for set_idx, set_point in enumerate(self.lpt_set_points):
                         row = {"Temperature [degC]": label_temp,
                                 "Inlet Pressure [barA]": inlet_pressure}
                         
-                        table_entry = {**table_mapping[set_idx]}
+                        table_entry = {**table_mapping[set_idx + 1]}  
 
                         if set_idx == 0:
                             key = f"response_time_to_{set_point}_barA"
@@ -1811,10 +1950,14 @@ class FMSQuery:
                         row["Description"] = description
                         tau_list = response_times.get(key, [])
 
-                        table_entry["time"] = f"{tau_list[0]:.1f}"
-                        table_entry["limit"] = 300 if "open" in description.lower() else 60
+                        table_entry["time"] = f"{tau_list[0]:.1f}" if bool(tau_list) else "N/A"
+                        table_entry["limit"] = self.max_response
+                        if bool(tau_list):
+                            table_entry["c"] = "C" if tau_list[0] <= table_entry["limit"] else "F" 
+                        else:
+                            table_entry["c"] = "N/A"
 
-                        table[pressure_label][set_idx] = table_entry
+                        table[pressure_label][set_idx + 1] = table_entry
 
                         for i, tau in enumerate(tau_list[:3]):
                             row[f"{i+1}_tau [s]"] = tau
@@ -1834,22 +1977,22 @@ class FMSQuery:
             display(output)
             df = pd.DataFrame(test_info)
             df = df.fillna("N/A")
-        tau_cols = [col for col in df.columns if "_tau" in col]
+            tau_cols = [col for col in df.columns if "_tau" in col]
 
         def color_cells(val, desc):
             if val == "N/A" or pd.isna(val):
                 return ''
             if "Opening Time" in desc:
-                if val < 300:
+                if val < self.max_opening_response:
                     return 'background-color: green'
-                elif val == 300:
+                elif val == self.max_opening_response:
                     return 'background-color: orange'
                 else:
                     return 'background-color: red'
             else:
-                if val < 60:
+                if val < self.max_response:
                     return 'background-color: green'
-                elif val == 60:
+                elif val == self.max_response:
                     return 'background-color: orange'
                 else:
                     return 'background-color: red'
@@ -1857,12 +2000,12 @@ class FMSQuery:
         def format_numeric(val):
             return f"{val:.1f}" if isinstance(val, (int, float)) else val
         
-        format_dict = {
-            **{col: format_numeric for col in tau_cols},
-            "Inlet Pressure [barA]": "{:.0f}",
-            "Actual Time [s]": format_numeric
-        }
         if show_table:
+            format_dict = {
+                    **{col: format_numeric for col in tau_cols},
+                    "Inlet Pressure [barA]": "{:.0f}",
+                    "Actual Time [s]": format_numeric
+                }
             styled_df = df.style.apply(
                 lambda row: [color_cells(v, df.loc[row.name, "Description"]) for v in row],
                 axis=1,
@@ -1873,34 +2016,40 @@ class FMSQuery:
         else:
             return closed_loop_data
 
-    def tv_slope_analysis(self) -> None:
+    def tv_slope_analysis(self, get_table: bool = False, correction: bool = True) -> None:
         """
         Perform TV slope analysis by plotting slope 1-2 vs slope 2-4 for different test types and temperatures.
         Compares against specification ranges and highlights the current FMS entry.
-        Args:
-            grouped_functional_tests (dict[str, dict[str, list[FMSFunctionalTests]]]): 
-                Grouped functional test entries by test type, pressure and temperature.
+
+        :param get_table: Whether to return the TV slope data as a dictionary.
+        :type get_table: Bool 
         """
         fms_id = self.fms_entry.fms_id
         grouped_functional_tests = self.grouped_functional_tests
         if len(grouped_functional_tests) == 0:
-            print("No functional tests found in the database.")
+            self._get_grouped_functional_tests()
+            grouped_functional_tests = self.grouped_functional_tests
+
+        if not bool(grouped_functional_tests):
+            print("No functional tests found.")
             return
 
         output = widgets.Output()
         correction_checkbox = widgets.Checkbox(
-            value = False,
+            value = correction,
             description = 'Show Inlet Pressure Correction:',
             indent = False,
             label_width = '150px'
         )
-        first_hot_date = next((t.date for type, temp_groups in grouped_functional_tests.items() for temp_type, tests in temp_groups.items() for t in tests if "hot" in temp_type.value and t.fms_id == fms_id), None)
+        first_hot_date = next((t.date for type, temp_groups in grouped_functional_tests.items()\
+                                for temp_type, tests in temp_groups.items() for t in tests if "hot" in temp_type.value and t.fms_id == fms_id), None)
         
         def on_correction_change(change: dict):
             correction = correction_checkbox.value
             correction_suffix = " (Corrected)" if correction else ""
             plot_dict = {}
             table_rows = []
+            slope_data = {}
             with output:
                 output.clear_output()
                 for test_type, temp_groups in grouped_functional_tests.items():
@@ -1917,7 +2066,6 @@ class FMSQuery:
                         current_slope12 = []
                         current_slope24 = []
 
-
                         for test in tests:
                             gas_type = self.fms_entry.gas_type if self.fms_entry else "Xe"
                             temperature = test.trp_temp
@@ -1931,12 +2079,28 @@ class FMSQuery:
                                 continue
 
                             if test.fms_id == fms_id:
+                                key = temp_type.value.split("_")[0]
                                 label_temp = f"{temperature:.0f}"
                                 if "room" in temp_type.value and first_hot_date and date < first_hot_date:
                                     label_temp = f"{temperature:.0f} (Pre Vibration)"
                                     first_room = False
+                                    key = "preroom"
+
+                                if not key in slope_data:
+                                    slope_data[key] = {}
+
+                                pressure_key = "low" if "low" in test_type.value else "high"
+                                min_slope = slope12/(correction_factor if correction else 1)
+                                max_slope = slope24/(correction_factor if correction else 1)
+                                slope_data[key][pressure_key] = {
+                                    "min": f"{min_slope:.1f}",
+                                    "max": f"{max_slope:.1f}",
+                                    "min_c": "C" if min_range_12 <= min_slope <= max_range_12 else "F",
+                                    "max_c": "C" if min_range_24 <= max_slope <= max_range_24 else "F"
+                                }
                                 
                                 table_rows.append({
+                                "Test ID": test.test_id,
                                 "Temperature [degC]": label_temp,
                                 "Inlet Pressure [barA]": 10 if inlet_pressure < 100 else 190,
                                 f"Slope 1-2 [mg/s W⁻¹ {gas_type}]": slope12/(correction_factor if correction else 1),
@@ -1969,6 +2133,9 @@ class FMSQuery:
                                 f"TRP Temp: {temperature} [degC]{correction_suffix}"
                             ),
                         }
+                
+                if get_table:
+                    return slope_data
 
                 df = pd.DataFrame(table_rows)
                 slope_cols = [f"Slope 1-2 [mg/s W⁻¹ {gas_type}]", f"Slope 2-4 [mg/s W⁻¹ {gas_type}]"]
@@ -1977,7 +2144,7 @@ class FMSQuery:
                 display(title)
                 # Round slope columns for display
                 df[slope_cols] = df[slope_cols].round(1)
-
+                df.insert(0, "Test #", [idx + 1 for idx in range(len(df))])
                 def style_slopes(val12, val24, pressure):
                     styles = []
                     if pressure == 10:
@@ -1993,10 +2160,11 @@ class FMSQuery:
 
                 # Apply only to slope columns
                 styled_df = df.style.apply(
-                    lambda row: [style_slopes(df.loc[row.name, f"Slope 1-2 [mg/s W⁻¹ {gas_type}]"], df.loc[row.name, f"Slope 2-4 [mg/s W⁻¹ {gas_type}]"], df.loc[row.name, "Inlet Pressure [barA]"])[i] for i in range(2)],
+                    lambda row: [style_slopes(df.loc[row.name, f"Slope 1-2 [mg/s W⁻¹ {gas_type}]"],\
+                                               df.loc[row.name, f"Slope 2-4 [mg/s W⁻¹ {gas_type}]"], df.loc[row.name, "Inlet Pressure [barA]"])[i] for i in range(2)],
                     axis=1,
                     subset=slope_cols
-                ).format({col: "{:.1f}" for col in slope_cols})
+                ).format({col: "{:.1f}" for col in slope_cols}).hide(axis = "index")
 
                 display(styled_df)
 
@@ -2053,9 +2221,170 @@ class FMSQuery:
 
                 plt.show()
         correction_checkbox.observe(on_correction_change, names='value')
-        display(correction_checkbox)
+        if not get_table:
+            display(correction_checkbox)
+            display(output)
+        return on_correction_change({})
+    
+    def fr_match_analysis(self) -> None:
+        """
+        Analyzes manifold sets to assess how individual FR tests influence overall FR performance 
+        when combined with the allocated LPT, in relation to the LPT slope specification in [AD02].
+
+        The analysis proceeds in three steps:
+        1. Evaluates the performance of individual FRs within existing sets and predicts their 
+        expected performance in combination with the assigned LPT against the specification.
+        2. Assesses the performance of these sets in the final FMS to determine whether 
+        specific FR-LPT combinations meet or fail the specification.
+        3. Applies found results to potential new sets.
+        """
+        mq = ManifoldQuery(session = self.session)
+        all_sets = mq._get_all_manifolds_with_sets()
+        order = 3
+        fms_sets: list[ManifoldStatus] = []
+        no_fms_sets: list[ManifoldStatus] = []
+        output = widgets.Output()
+        plot_output = widgets.Output()
+        plot_output2 = widgets.Output()
+        temperature = 22
         display(output)
-        on_correction_change({})
+        for i in all_sets:
+            if i.fms_main:
+                fms_sets.append(i)
+            elif not i.allocated:
+                no_fms_sets.append(i)
+        
+        def handle_individual_set(flow_rates: list[float], voltages: list[float]):
+            flow_rates = np.array(flow_rates)
+            voltages = np.array(voltages)
+            polyfit = np.polyfit(voltages, flow_rates, order)
+            calculated_total_flows = np.polyval(polyfit, self.lpt_voltages).flatten().tolist()
+            max_margin = np.array(self.max_flow_rates) - np.array(calculated_total_flows)
+            min_margin = np.array(calculated_total_flows) - np.array(self.min_flow_rates)
+            fr_data = {"set_id": "", "fms": "", "tot_flow": calculated_total_flows,
+                    "max_deviation": np.average(max_margin),
+                    "min_deviation": np.average(min_margin),
+                    "worst_margin": np.min(np.minimum(max_margin, min_margin)),
+                    "individual_pass": 1 if all(min_f <= calc_f <= max_f 
+                            for min_f, max_f, calc_f in zip(self.min_flow_rates, self.max_flow_rates, calculated_total_flows)) else 0
+                        }
+            return fr_data
+
+        main_df_data = []
+        with output:
+            for _set in tqdm(fms_sets, desc="Processing FMS Sets"):
+                anode_fr: AnodeFR = _set.anode[0] if _set.anode else None
+                cathode_fr: CathodeFR = _set.cathode[0] if _set.cathode else None
+                lpt: LPTCalibration = _set.lpt[0] if _set.lpt else None
+                if not anode_fr or not cathode_fr or not lpt:
+                    print(f"Not enough found for set {_set.set_id} on FMS {_set.allocated}")
+                    continue
+                
+                pressures = anode_fr.pressures
+                anode_flow_rates = np.array(anode_fr.flow_rates)
+                cathode_flow_rates = np.array(cathode_fr.flow_rates)
+                tot_flow_rates = anode_flow_rates + cathode_flow_rates
+                voltages = mq.calculate_lpt_voltage(lpt=lpt, pressures=pressures, temperature = temperature)
+                fr_data = handle_individual_set(tot_flow_rates, voltages)
+                fr_test = self.get_fr_tests(fms_id = _set.allocated)[0]
+                _, fms_test_data = self.plot_fr_voltage(fms_id = _set.allocated, test_id = fr_test.test_id, initial_order = order, plot = False)
+                fr_data["tot_flow_fms"] = [i.get("tot_flow_raw") for i in fms_test_data]
+                fr_data["spec_pass"] = 1 if all(i.get("comp") == "C" for i in fms_test_data) else 0
+                fr_data["set_id"] = _set.set_id
+                fr_data["fms"] = _set.allocated
+                fr_data["gas_type"] = fr_test.gas_type
+
+                main_df_data.append(fr_data)
+
+        second_df_data = []
+        matching_list = []
+        with output:
+            output.clear_output()
+            for _set in tqdm(no_fms_sets, desc="Processing FMS Potential"):
+                anode_fr: AnodeFR = _set.anode[0] if _set.anode else None
+                cathode_fr: CathodeFR = _set.cathode[0] if _set.cathode else None
+                lpt: LPTCalibration = _set.lpt[0] if _set.lpt else None
+                if not anode_fr or not cathode_fr or not lpt:
+                    print(f"Not enough found for set {_set.set_id} on FMS {_set.allocated}")
+                    continue
+                
+                pressures = anode_fr.pressures
+                anode_flow_rates = np.array(anode_fr.flow_rates)
+                cathode_flow_rates = np.array(cathode_fr.flow_rates)
+                tot_flow_rates = anode_flow_rates + cathode_flow_rates
+                voltages = mq.calculate_lpt_voltage(lpt=lpt, pressures=pressures, temperature = temperature)
+                fr_data = handle_individual_set(tot_flow_rates, voltages)
+                second_df_data.append(fr_data)
+                fr_data["set_id"] = _set.set_id
+                fr_data["gas_type"] = fr_test.gas_type
+                if fr_data["individual_pass"] == 0:
+                    matching_list.append({**fr_data, "anode": anode_fr, "cathode": cathode_fr, "set_id": _set.set_id, "ratios": (anode_flow_rates/cathode_flow_rates).tolist()})
+                del fr_data["fms"]
+
+        main_df = pd.DataFrame(sorted([{key: value for key, value in i.items() if not key == "tot_flow"\
+                                         and not key == "tot_flow_fms" and not key == "gas_type"} for i in main_df_data], key = lambda x: int(x.get("set_id"))))
+        
+        second_df = pd.DataFrame(sorted([{key: value for key, value in i.items() if not key == "tot_flow"\
+                                         and not key == "tot_flow_fms" and not key == "gas_type"} for i in second_df_data], key = lambda x: int(x.get("set_id"))))
+        
+        fms_options = main_df["fms"].to_list()
+        dropdown = widgets.Dropdown(
+            options = [(i if main_df.loc[main_df["fms"] == i]["spec_pass"].values[0] == 1 else i + " (out)", i) for i in fms_options],
+            value = fms_options[0],
+            **field("Plot Results:"),
+        )
+        def _plot_results(change: dict):
+            fms_id = dropdown.value
+            with plot_output2:
+                plot_output2.clear_output()
+                data = next((i for i in main_df_data if i.get("fms") == fms_id), {})
+                out_of_spec = data.get("spec_pass") == 0
+                out_of_spec_ind = data.get("individual_pass") == 0
+                plt.plot(self.lpt_voltages, data.get('tot_flow_fms'), label = "FMS FR Test" if not out_of_spec else "FMS FR Test (Out of spec)")
+                plt.plot(self.lpt_voltages, data.get("tot_flow"), label = "Calculated Flow Individual FRs" if not out_of_spec_ind else "Flow Rate Individual FRs (Out of spec)")
+                plt.plot(self.lpt_voltages, self.min_flow_rates, label="Min Flow Rate Spec", color = "tab:grey", linestyle = "--")
+                plt.plot(self.lpt_voltages, self.max_flow_rates, label="Min Flow Rate Spec", color = "tab:grey", linestyle = "--")
+
+                plt.xlabel("LPT Pressure [mV]")
+                plt.ylabel(f"Calculated Flow Rate [mg/s {data.get("gas_type", "Xe")}]")
+                plt.title(f"FMS {data.get("fms")} FR Test Results Compared to Individual FR Results.\n LPT Reference Temperature: {temperature} ⁰C")
+                plt.legend()
+                plt.grid(True)
+                plt.show()
+
+        with plot_output:
+            plt.scatter(main_df["worst_margin"], main_df["spec_pass"], c=main_df["spec_pass"], cmap="bwr", edgecolor='k', s=80, alpha=0.8)
+            plt.axvline(0, color='green', linestyle='--', linewidth=2, label='Worst Margin = 0')
+            plt.fill_betweenx([0,1], main_df["worst_margin"].min() - 0.05, 0, color='red', alpha=0.1, label='Fail Zone')
+            plt.fill_betweenx([0,1], 0, main_df["worst_margin"].max() + 0.05, color='green', alpha=0.1, label='Pass Zone')
+
+            plt.xlabel("Worst Margin")
+            plt.ylabel("Spec Pass (0/1)")
+            plt.title("Worst Margin vs Spec Pass")
+            plt.yticks([0,1], ["Fail", "Pass"])
+            plt.legend()
+            plt.grid(alpha=0.3)
+            plt.show()
+
+        dropdown.observe(_plot_results, names = 'value')
+        _plot_results({})
+
+        lpt_match_df = mq.match_sets_to_lpt(matching_list = matching_list, temperature = temperature)
+        display(
+            widgets.VBox([
+            dropdown,
+            widgets.HBox([plot_output, plot_output2]),
+            widgets.VBox([
+                widgets.HTML("<h3>Allocated Sets LPT Slope Spec Analysis</h3>"),
+                widgets.HTML(main_df.style.hide(axis="index").to_html()),
+                widgets.HTML("<h3>Potential Sets Spec Analysis</h3>"),
+                widgets.HBox([
+                widgets.HTML(second_df.style.hide(axis="index").to_html()),
+                widgets.HTML(lpt_match_df.style.hide(axis="index").hide(subset=["flow", "voltages"], axis="columns").to_html())
+                ])
+            ]),
+            ], layout=widgets.Layout(justify_content='space-between', align_items='flex-start', gap='20px'))
+        )
 
     def part_investigation_query(self, part_type: str) -> None:
         """
@@ -2072,3 +2401,4 @@ class FMSQuery:
         elif part_type == "HPIV":
             hpiv_query = HPIVQuery(session=self.session, fms_entry=self.fms_entry, local=self.local)
             hpiv_query.hpiv_query_field()
+

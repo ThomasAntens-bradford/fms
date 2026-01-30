@@ -242,13 +242,13 @@ class ManifoldData:
             
                 self.convert_coefficients(lpt_id=lpt_id, file_path=file_path)
 
-    def calculate_pressure(self,R: float, U: float, c: list[float]) -> float:
+    def calculate_pressure(self, R: float, U: float | np.ndarray, c: list[float]) -> float:
         """
         Calculate pressure from resistance R, signal U, and 16 pressure coefficients c.
 
         Args:
             R (float): Base resistance.
-            U (float): Signal.
+            U (float | np.ndarray): Signal.
             c (list[float]): Flattened list of 16 pressure coefficients.
 
         Returns:
@@ -261,13 +261,13 @@ class ManifoldData:
             U**3*(c[12] + R*c[13] + R**2*c[14] + R**3*c[15])
         )
     
-    def calculate_temperature(self, R: float, U: float, c: list[float]) -> float:
+    def calculate_temperature(self, R: float, U: float | np.ndarray, c: list[float]) -> float:
         """
         Calculate temperature from resistance R, signal U, and 16 temperature coefficients c.
 
         Args:
             R (float): Base resistance.
-            U (float): Signal.
+            U (float | np.ndarray): Signal.
             c (list[float]): Flattened list of 16 temperature coefficients.
 
         Returns:
@@ -966,7 +966,6 @@ class ManifoldLogicSQL:
         self.anode_ids = []
         self.cathode_ids = []
         sheet = wb.active
-
         for row in sheet.iter_rows(min_row=3, max_col = 25, values_only=True):
             if all(cell is None for cell in row[2:]):
                 break
@@ -982,6 +981,7 @@ class ManifoldLogicSQL:
                 if len(parts) == 3:
                     parts[2] = parts[2].zfill(3)
                     anode_fr = '-'.join(parts)
+
             anode_filter = row[18]
             anode_outlet = row[19]
             cathode_fr = row[20]
@@ -991,10 +991,25 @@ class ManifoldLogicSQL:
                     parts[2] = parts[2].zfill(3)
                     cathode_fr = '-'.join(parts)
 
+            if anode_outlet:
+                anode_outlet = anode_outlet.split("-")
+                if len(anode_outlet) > 2:
+                    anode_outlet = "-".join(anode_outlet[:-1])
+                else:
+                    anode_outlet = "-".join(anode_outlet)
+
             cathode_filter = row[21]
             cathode_outlet = row[22]
             lpt_id = row[23]
-            lpt_id = lpt_id[-7:] if lpt_id else None
+            if lpt_id:
+                lpt_id = lpt_id.split("-")[-1].strip()
+
+            if cathode_outlet:
+                cathode_outlet = cathode_outlet.split("-")
+                if len(cathode_outlet) > 2:
+                    cathode_outlet = "-".join(cathode_outlet[:-1])
+                else:
+                    cathode_outlet = "-".join(cathode_outlet)
 
             pattern = r"^C\d{2}-\d{4}-\d{3}$"
 
@@ -1025,6 +1040,7 @@ class ManifoldLogicSQL:
                 'cathode_outlet': cathode_outlet,
                 'lpt_id': lpt_id
             }
+            print(row)
             self.manifold_assembly_data.append(row)
 
     def update_related_parts(self, session: "Session", set_id: str, anode_fr: str, anode_filter: str, anode_outlet: str, \

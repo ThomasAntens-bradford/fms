@@ -26,6 +26,7 @@ from ..utils.enums import TVProgressStatus, TVParts
 from ..db import TVStatus, TVCertification, CoilAssembly
 
 from ..fms_data_structure import FMSDataStructure
+from sharedBE import operator
 
 class TVAssembly:
     """
@@ -134,27 +135,25 @@ class TVAssembly:
         Generates the TV assembly procedure report as a Word document and converts it to PDF.
     """
     
-    def __init__(self, word_template_path: str = r"templates\tv_assembly_procedure.docx", local = True,
-                 main_path: str = "TVAssemblyProcedure", save_path: str =  r"\\be.local\Doc\DocWork\20025 - CHEOPS2 Low Power\10 - Documents\PR\TV assembly procedure\As-run\Automated"):
+    def __init__(self, local = True, procedure_name: str = "tv_coil_assembly_procedure", save_path: str =  r"\\be.local\Doc\DocWork\20025 - CHEOPS2 Low Power\10 - Documents\PR\TV assembly procedure\As-run\Automated"):
         
         self.fms = FMSDataStructure(local = local)
-        self.operator = self.fms.operator
+        self.operator = operator
         self.session: "Session" = self.fms.Session()
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.template_path = os.path.join(current_dir, word_template_path)
         self.doc = self.get_document()
         self.context = {}
         self.start_date = None
         self.tv_id = None
-        self.main_path = os.path.join(current_dir, main_path)
+        self.main_path = os.path.join(current_dir, procedure_name)
         self.resistance_goal = None
         self.img_path = os.path.join(current_dir, "images", "bradford_logo.jpg")
         self.save_path = save_path
         self.holder_1_certs: list[TVCertification] = None
         self.holder_2_certs: list[TVCertification] = None
         self.json_files = os.path.join(os.path.dirname(__file__), "json_files")
-        # self.steps: dict[str, dict] = self.fms.load_procedure('tv_assembly_steps')
-        self.steps: dict[str, dict] = load_from_json('tv_assembly_steps', directory = self.json_files)
+        # self.steps: dict[str, dict] = self.fms.load_procedure('tv_coil_assembly_procedure')
+        self.steps: dict[str, dict] = load_from_json('tv_coil_assembly_procedure', directory = self.json_files)
         self.output = widgets.Output()
         self.container = widgets.VBox()
         self.all_drafts = (
@@ -171,6 +170,7 @@ class TVAssembly:
         if self.all_steps:
             self.tv_id = self.all_steps[0].get('tv_id', None)
             self.steps = self.all_steps[0]
+
         self.initialize_header()
         self.adhesive_logs = []
         self.start_date_obj = None
@@ -209,14 +209,14 @@ class TVAssembly:
         """
         try:
             # if tv_id == 30:
-            #     return load_from_json("tv_assembly_steps_draft")
+            #     return load_from_json("tv_coil_assembly_procedure_draft")
             entry = self.session.query(CoilAssembly).filter_by(tv_id=tv_id).first()
             if entry:
                 return entry.steps
-            return load_from_json('tv_assembly_steps', directory = self.json_files)
+            return load_from_json('tv_coil_assembly_procedure', directory = self.json_files)
         except Exception as e:
             print(f"Error retrieving steps for TV ID {tv_id}: {e}")
-            return load_from_json('tv_assembly_steps', directory = self.json_files)
+            return load_from_json('tv_coil_assembly_procedure', directory = self.json_files)
 
     def on_tv_change(self, change: dict) -> None:
         """
@@ -1684,7 +1684,7 @@ class TVAssembly:
         final_pdf_path = os.path.join(self.save_path, os.path.basename(pdf_path))
         shutil.move(pdf_path, final_pdf_path)
 
-        # delete_json_file(f"tv_assembly_steps_draft_{self.tv_id}")
+        # delete_json_file(f"tv_coil_assembly_procedure_draft_{self.tv_id}")
         with self.output:
             self.output.clear_output()
             print(f"Final report generated and saved to: {final_pdf_path}")

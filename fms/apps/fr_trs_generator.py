@@ -132,7 +132,7 @@ class FRTRSGenerator:
                 tool_entry = be.tools.get_tool_by_attributes(model = model, description = description, serial_number = serial)
 
                 if tool_entry:
-                    complete_tool_entry = {c.name: format_value(tool=tool_entry, column=c.name) for c in be.tools.test_tool_columns}
+                    complete_tool_entry = {c.name: format_value(tool=tool_entry, column=c.name) for c in be.tools.__columns__}
                     if not complete_tool_entry in all_used_tools:
                         all_used_tools.append(complete_tool_entry)
         

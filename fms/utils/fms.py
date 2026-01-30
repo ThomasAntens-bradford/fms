@@ -21,7 +21,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
-from IPython import display
+from IPython.display import display
 import ipywidgets as widgets
 from sqlalchemy import func, or_
 
@@ -875,7 +875,7 @@ class FMSData:
             print("No valid FR test found")
             return
 
-        self.df['ac_ratio'] = self.df[FMSFlowTestParameters.ANODE_FLOW.value] / self.df[FMSFlowTestParameters.CATHODE_FLOW.value]
+        # self.df['ac_ratio'] = self.df[FMSFlowTestParameters.ANODE_FLOW.value] / self.df[FMSFlowTestParameters.CATHODE_FLOW.value]
         self.intersections = find_intersections(
             self.df[voltage_col].to_numpy(),
             self.df[flow_col].to_numpy(),
@@ -2127,7 +2127,7 @@ class FMSLogicSQL:
             Updates the FMSLimits table with specified limits for the parameters of the FMS in acceptance testing.
     """
 
-    def __init__(self, session: "Session", fms: "FMSDataStructure", ):
+    def __init__(self, session: "Session", fms: "FMSDataStructure"):
         self.Session = session
         self.fms = fms
         self.fr_test_results = {}
@@ -2189,6 +2189,7 @@ class FMSLogicSQL:
         Upon detecting a new file, it processes the data and updates the database accordingly.
         """
         data_folder = os.path.join(os.getcwd(), data_folder)
+        print(data_folder)
         try:
             self.functional_tests_listener = FMSListener(data_folder)
             print(f"Started monitoring functional tests data in: {data_folder}\n Drop the xls file in the FMS Data folder on the desktop.")
@@ -2204,7 +2205,7 @@ class FMSLogicSQL:
                                 session = self.Session()
                             except:
                                 session = self.Session
-                            self.functional_tests_listener.fms_data.show_test_input_field(session, self)
+                            self.functional_tests_listener.fms_data.show_test_input_field(session = session, fms_sql = self)
                             self.functional_tests_listener.processed = False  
                             break
 
@@ -2286,6 +2287,7 @@ class FMSLogicSQL:
                 del self.flow_power_slope['total_flows_24']
             else:
                 self.flow_power_slope = {}
+            
 
             if self.functional_test_results and self.selected_fms_id:
                 flow_test_entry = session.query(FMSFunctionalTests).filter_by(fms_id = self.selected_fms_id, test_id = self.test_id).first()
@@ -2317,7 +2319,8 @@ class FMSLogicSQL:
                     flow_test_entry.slope_correction = self.slope_correction
                     fms_main: FMSMain = flow_test_entry.fms_main
                     if status_update and fms_main:
-                        fms_main.status = status_update if not (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
+                        fms_main.status = status_update if not (fms_main.status == FMSProgressStatus.SHIPMENT or\
+                                                                 fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
                 else:
                     flow_test_entry = FMSFunctionalTests(
                         fms_id=self.selected_fms_id,
@@ -2340,7 +2343,8 @@ class FMSLogicSQL:
                     if status_update:
                         fms_main = flow_test_entry.fms_main
                         if fms_main:
-                            fms_main.status = status_update if not (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
+                            fms_main.status = status_update if not (fms_main.status == FMSProgressStatus.SHIPMENT or\
+                                                                     fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
                 session.commit()
                 # Update test results
                 characteristics = session.query(FMSFunctionalResults).filter_by(test_id=self.test_id).all()
@@ -2387,15 +2391,17 @@ class FMSLogicSQL:
             fr_tests = session.query(FMSFRTests).filter_by(fms_id=self.selected_fms_id).all()
             tvac_tests = session.query(FMSTvac).filter_by(fms_id=self.selected_fms_id).all()
             if flow_tests:
-                if all(test.test_type in [FunctionalTestType.HIGH_CLOSED_LOOP, FunctionalTestType.LOW_CLOSED_LOOP, FunctionalTestType.LOW_SLOPE, FunctionalTestType.HIGH_SLOPE] for test in flow_tests) \
-                    and fr_tests and not tvac_tests:
-                    fms_main = flow_tests[0].fms_main
+                if all(test_type in [test.test_type for test in flow_tests] for test_type in\
+                        [FunctionalTestType.HIGH_CLOSED_LOOP, FunctionalTestType.LOW_CLOSED_LOOP, FunctionalTestType.LOW_SLOPE, FunctionalTestType.HIGH_SLOPE]) and fr_tests and not tvac_tests:
+                    fms_main: FMSMain = flow_tests[0].fms_main
                     if fms_main:
-                        fms_main.status = FMSProgressStatus.READY_FOR_TVAC if not (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
+                        fms_main.status = FMSProgressStatus.READY_FOR_TVAC if not\
+                              (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
                     else:
                         fms_main = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
                         if fms_main:
-                            fms_main.status = FMSProgressStatus.READY_FOR_TVAC if not (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
+                            fms_main.status = FMSProgressStatus.READY_FOR_TVAC if not\
+                                  (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
                     print(f"FMS {self.selected_fms_id} flow tests completed.")
 
                     session.commit()
@@ -2434,11 +2440,11 @@ class FMSLogicSQL:
                 session = self.Session
             if self.functional_test_results and self.selected_fms_id:
                 fr_check = session.query(FMSFRTests).filter_by(fms_id=self.selected_fms_id, test_id=self.test_id).first()
-                if fr_check:
-                    print("This test has already been registered in the database")
-                    return
                 # if fr_check:
-                #     session.delete(fr_check)
+                #     print("This test has already been registered in the database")
+                #     return
+                if fr_check:
+                    session.delete(fr_check)
 
                 fms_entry = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
                 if not fms_entry:

@@ -14,6 +14,8 @@ class FMSAcceptanceTests(Base):
         Primary Key, unique Acceptance Test ID.
     fms_id : String
         Foreign Key, FMS ID (references the main FMS table).
+    version : String
+        Version of the procedure used.
     raw_json : JSON
         JSON field to store raw acceptance test data.
     report_generated : Boolean
@@ -36,6 +38,7 @@ class FMSAcceptanceTests(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     fms_id = Column(String(50), ForeignKey('fms_main.fms_id'), nullable=False, unique=True)
+    version = Column(String(50), nullable=False)
     raw_json = Column(JSON, nullable=True)
     report_generated = Column(Boolean, default=False)
     date_created = Column(DateTime, nullable=True)

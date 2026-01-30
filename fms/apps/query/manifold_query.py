@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Third party imports
 from IPython.display import display
@@ -17,6 +17,7 @@ from datetime import datetime
 # Local imports
 from fms import FMSDataStructure
 from fms.utils.general_utils import display_df_in_chunks, field
+from fms.utils.specs import fms_specifications
 from fms.utils.enums import LimitStatus, LPTCoefficientParameters
 from fms.db import (
     ManifoldStatus, 
@@ -177,9 +178,9 @@ class ManifoldQuery:
                  pressure_threshold: float = 0.2, signal_tolerance: float = 0.05, signal_threshold: float = 7.5, anode_fs: float = 20, cathode_fs: float = 2,
                  fs_error: float = 0.001, reading_error: float = 0.005, xenon_density: float = 5.894, krypton_density: float = 3.749):
         
+        self.fms = FMSDataStructure(local = local)
         if not bool(session):
-            fms = FMSDataStructure(local = local)
-            self.session = fms.Session()
+            self.session = self.fms.Session()
         else:
             self.session = session
 
@@ -228,48 +229,57 @@ class ManifoldQuery:
         else:
             self.set_id = None
             self.manifold = None
-            self.all_sets = self.session.query(ManifoldStatus).filter(ManifoldStatus.set_id != None).all()
 
         self.actions = ['Status', "FR Matching", 'Anode FR', 'Cathode FR', 'LPT', 'Certifications']
         self.value = 'Status'
         self.anode = True
 
-        self.all_lpts = self.session.query(LPTCalibration).all()
-        self.all_lpt_certifications: list[str] = list(set([i.certification if not i.certification == self.lpt_certification else i.certification + ' (Current)' \
-                                                for i in self.all_lpts if i.certification]))
-        
-        self.lpt_count_dict = {}
-        for cert in self.all_lpt_certifications:
-            cert_clean = cert.replace(' (Current)', '')
-            count = len([i for i in self.all_lpts if i.certification == cert_clean])
-            self.lpt_count_dict[cert_clean] = count
+    def _get_all_lpts(self) -> None:
+        if not hasattr(self, "all_lpts"):
+            self.all_lpts = self.session.query(LPTCalibration).all()
+            self.all_lpt_certifications: list[str] = list(set([i.certification if not i.certification == self.lpt_certification else i.certification + ' (Current)' \
+                                                    for i in self.all_lpts if i.certification]))
+            
+            self.lpt_count_dict = {}
+            for cert in self.all_lpt_certifications:
+                cert_clean = cert.replace(' (Current)', '')
+                count = len([i for i in self.all_lpts if i.certification == cert_clean])
+                self.lpt_count_dict[cert_clean] = count
 
-        self.manifold_cert_counts = self.session.query(
-            ManifoldStatus.certification,
-            func.count(ManifoldStatus.manifold_id)
-        ).group_by(ManifoldStatus.certification).all()
+    def _get_all_manifolds_with_sets(self) -> list[ManifoldStatus]:
+        if not hasattr(self, "all_sets") or not self.all_sets:
+            manifolds = self.session.query(ManifoldStatus).filter(ManifoldStatus.set_id != None).all()
+            self.all_sets = manifolds
+        return self.all_sets
 
-        self.manifold_assembly_certs: list[ManifoldStatus] = (
-            self.session.query(
-                ManifoldStatus.assembly_certification,
-                func.group_concat(ManifoldStatus.set_id) 
-            )
-            .group_by(ManifoldStatus.assembly_certification)
-            .all()
-        )
+    def _get_all_certifications(self) -> None:
+        if not hasattr(self, "manifold_cert_counts") or not self.manifold_assembly_certs:
+            self.manifold_cert_counts = self.session.query(
+                ManifoldStatus.certification,
+                func.count(ManifoldStatus.manifold_id)
+            ).group_by(ManifoldStatus.certification).all()
 
-        self.fr_part_certs: list[FRCertification] = (
-            self.session.query(
-                FRCertification.certification,
-                FRCertification.part_name,
-                func.count(FRCertification.part_id)
+            self.manifold_assembly_certs: list[ManifoldStatus] = (
+                self.session.query(
+                    ManifoldStatus.assembly_certification,
+                    func.group_concat(ManifoldStatus.set_id) 
+                )
+                .group_by(ManifoldStatus.assembly_certification)
+                .all()
             )
-            .group_by(
-                FRCertification.certification,
-                FRCertification.part_name
+
+            self.fr_part_certs: list[FRCertification] = (
+                self.session.query(
+                    FRCertification.certification,
+                    FRCertification.part_name,
+                    func.count(FRCertification.part_id)
+                )
+                .group_by(
+                    FRCertification.certification,
+                    FRCertification.part_name
+                )
+                .all()
             )
-            .all()
-        )
 
     def manifold_query_field(self) -> None:
         """
@@ -288,7 +298,7 @@ class ManifoldQuery:
             style={'description_width': '80px'},
             value=self.set_id if self.set_id else None,
             disabled=True if self.set_id else False,
-            options=sorted([m.set_id for m in self.all_sets], reverse=True) if not self.set_id else [self.set_id]
+            options=sorted([m.set_id for m in self._get_all_manifolds_with_sets()], reverse=True) if not self.set_id else [self.set_id]
         )
 
         query_field = widgets.Dropdown(
@@ -348,6 +358,7 @@ class ManifoldQuery:
             
         def on_manifold_change(change: dict) -> None:
             new_set_id = change['new']
+            self._get_all_lpts()
             with self.output:
                 self.output.clear_output()
                 if new_set_id:
@@ -385,6 +396,7 @@ class ManifoldQuery:
                 dynamic_field.options = ['Status', 'Trend Analysis'] if serial_field.value else ['Trend Analysis']
                 dynamic_field.value = None if not serial_field.value else 'Status'
             elif choice == 'LPT':
+                self._get_all_lpts()
                 serial_field.options = [lpt.lpt_id for lpt in self.all_lpts if lpt.lpt_id]
                 lpt: "LPTCalibration" = self.manifold.lpt[0] if self.manifold and self.manifold.lpt else None
                 serial_field.value = lpt.lpt_id if lpt else None
@@ -573,7 +585,7 @@ class ManifoldQuery:
         df = pd.DataFrame({"Field": columns, "Value": values})
 
         tools: list[dict[str, str]] = fr_entry.tools
-        all_tools = be.tools.get_all_tools()
+        all_tools = be.tools.get_all_test_tools()
         tool_cols = be.tools.__columns__
         df_data = []
 
@@ -1942,6 +1954,10 @@ class ManifoldQuery:
                 outlier_dict[cert] = outliers
 
         return outlier_dict
+    
+    def _fr_id_sort_key(self, fr_id: str):
+        parts = fr_id.split("-")
+        return (int(parts[0][1:]), int(parts[1]), int(parts[2]))
 
     def match_flow_restrictors(self, anode_certifications: list[str], cathode_certifications: list[str], ratio: float = 13, tolerance: float = 0.5,
                             simulated_anode_fr: dict = None, simulated_cathode_fr: dict = None, exclude_outliers: bool = True) -> None:
@@ -1955,9 +1971,6 @@ class ManifoldQuery:
             simulated_anode_fr (dict): Optional pre-simulated anode flow data.
             simulated_cathode_fr (dict): Optional pre-simulated cathode flow data.
         """
-        def fr_id_sort_key(fr_id: str):
-            parts = fr_id.split("-")
-            return (int(parts[0][1:]), int(parts[1]), int(parts[2]))
 
         outlier_anode_dict = self._get_fr_outliers(certifications = anode_certifications, fr_type = "Anode", exclude_outliers = exclude_outliers)
         outlier_cathode_dict = self._get_fr_outliers(certifications = cathode_certifications, fr_type = "Cathode", exclude_outliers = exclude_outliers)
@@ -1980,8 +1993,9 @@ class ManifoldQuery:
         flat_data = []
         anodes_with_zero, cathodes_with_zero = [], []
 
+        fr_map: dict[str, AnodeFR | CathodeFR] = {}
         # Helper function to process pairs
-        def process_pairs(anodes, cathodes, sim_flag=False):
+        def process_pairs(anodes: list[AnodeFR], cathodes: list[CathodeFR], sim_flag=False):
             for a_id, a_obj in (anodes if sim_flag else [(x.fr_id, x) for x in anodes]):
                 if sim_flag:
                     a_flow = np.atleast_1d(np.array(a_obj.get("flow_rates", []), dtype=float))
@@ -1989,6 +2003,7 @@ class ManifoldQuery:
                 else:
                     a_flow = np.atleast_1d(np.array(a_obj.flow_rates, dtype=float))
                     a_press = a_obj.pressures
+                    fr_map[a_id] = a_obj
 
                 if a_flow.size == 0:
                     continue
@@ -2007,7 +2022,8 @@ class ManifoldQuery:
                     else:
                         c_flow = np.atleast_1d(np.array(c_obj.flow_rates, dtype=float))
                         c_press = c_obj.pressures
-
+                        fr_map[c_id] = c_obj
+ 
                     if c_flow.size == 0:
                         continue
 
@@ -2050,8 +2066,8 @@ class ManifoldQuery:
             process_pairs(simulated_anode_fr.items(), simulated_cathode_fr.items(), sim_flag=True)
         else:
             # Sort anodes and cathodes for deterministic processing
-            anode_fr = sorted(anode_fr, key=lambda x: fr_id_sort_key(x.fr_id))
-            cathode_fr = sorted(cathode_fr, key=lambda x: fr_id_sort_key(x.fr_id))
+            anode_fr = sorted(anode_fr, key=lambda x: self._fr_id_sort_key(x.fr_id))
+            cathode_fr = sorted(cathode_fr, key=lambda x: self._fr_id_sort_key(x.fr_id))
             process_pairs(anode_fr, cathode_fr)
 
         if not flat_data:
@@ -2063,62 +2079,341 @@ class ManifoldQuery:
 
         # --- Build weighted bipartite graph ---
         G = nx.Graph()
-        for a_id in sorted(self.fr_matching_ratios.keys(), key=fr_id_sort_key):
-            for c_id in sorted(self.fr_matching_ratios[a_id].keys(), key=fr_id_sort_key):
+        for a_id in sorted(self.fr_matching_ratios.keys(), key=self._fr_id_sort_key):
+            for c_id in sorted(self.fr_matching_ratios[a_id].keys(), key=self._fr_id_sort_key):
                 # Weight = mean absolute deviation from target ratio
                 ratio_vec = self.fr_matching_ratios[a_id][c_id]
                 weight = np.mean(np.abs(ratio_vec - ratio)**2)
                 G.add_edge(a_id, c_id, weight=weight)
-
-        # Sorted top nodes
-        top_nodes = sorted([n for n in self.fr_matching_dict.keys() if n in G.nodes], key=fr_id_sort_key)
             
         # Weighted maximum matching
         matching = nx.algorithms.min_weight_matching(G, weight='weight')
         anode_ids = set(self.fr_matching_ratios.keys())  
 
-        matching_dict = {}
+        matching_dict: dict[str, str] = {}
         for u, v in matching:
             if u in anode_ids:
                 matching_dict[u] = v
             else:
                 matching_dict[v] = u
-        # Prepare display data for maximum matching
+
+        def sort_df_by_fr_id(s: pd.Series):
+            parts = s.str.split("-")
+            return pd.DataFrame({
+                "p0": parts.str[0].str[1:].astype(int),
+                "p1": parts.str[1].astype(int),
+                "p2": parts.str[2].astype(int)
+            }).apply(tuple, axis=1)
+
         max_match_data = []
-        for idx, a_id in enumerate(matching_dict):
+        lpt_match_data = []
+        for a_id in matching_dict:
             c_id = matching_dict[a_id]
             ratios = self.fr_matching_ratios[a_id][c_id]
-            row = {"Match #": f"{idx + 1}", "Anode ID": a_id, "Cathode ID": c_id}
+            lpt_match_data.append({"anode": fr_map[a_id], "cathode": fr_map[c_id], "ratios": ratios})
+            row = {"Anode ID": a_id, "Cathode ID": c_id}
             for i, r in enumerate(ratios, start=1):
                 row[f"Ratio {i}"] = r
             max_match_data.append(row)
 
-        matching_yield = len(max_match_data)/min(len(anode_fr), len(cathode_fr))*100
-        print(f"Matching yield: {matching_yield:.2f} %")
-
-        print("\nWeighted Maximum Matching (closest to target ratio):")
         df_max = pd.DataFrame(max_match_data)
+        df_max = df_max.sort_values(by="Anode ID", key=sort_df_by_fr_id)
+        df_max.insert(0, "Match #", range(1, len(df_max) + 1))
+
         format_dict = {col: "{:.2f}" for col in df_max.columns if col.startswith("Ratio")}
         styled_df = df_max.style.format(format_dict).hide(axis='index')
-        display(styled_df)
 
-        # Visualize bipartite graph
-        pos = nx.bipartite_layout(G, top_nodes)
-        degrees = dict(G.degree())
-        node_sizes = [300 + 50 * degrees[n] for n in G.nodes()]
-        node_colors = ['tab:blue' if n in top_nodes else 'tab:orange' for n in G.nodes()]
+        temperature = 22
 
-        plt.figure(figsize=(12, 8))
-        nx.draw(G, pos,
-                with_labels=True,
-                node_size=node_sizes,
-                node_color=node_colors,
-                edge_color='gray',
-                font_size=8,
-                width=1.2)
-        plt.title("Weighted Bipartite Graph of Anode–Cathode Pairings")
-        plt.axis('off')
-        plt.show()
+        lpt_match_df = self.match_sets_to_lpt(matching_list = lpt_match_data, temperature=temperature)
+
+        matching_yield = len(lpt_match_df)/min(len(anode_fr), len(cathode_fr))*100
+        print(f"Matching yield: {matching_yield:.2f} %")
+
+        dropdown = widgets.Dropdown(
+            options = [("All Sets", "all")] + [(f"Set {i}", idx) for idx, i in enumerate(lpt_match_df["(Potential) Set ID"].tolist())],
+            value = "all",
+            **field("Analyse Set: ")
+        )
+
+        plot_output = widgets.Output()
+        plot_output.layout = widgets.Layout(height="1000px", width="100%")
+
+        display(
+            widgets.VBox([
+                widgets.HTML("<h3>Maximum FR Matches (left) and Maximum Matches with LPTs w.r.t. LPT Voltage spec.</h3>"), 
+                widgets.HBox([
+                    widgets.HTML(styled_df.to_html()), 
+                    widgets.HTML(
+                        lpt_match_df
+                        .style
+                        .hide(axis="index")
+                        .hide(subset=["flow", "voltages"], axis="columns")
+                        .to_html()
+                    )
+                ]),
+                dropdown,
+                plot_output
+            ])
+        )
+
+        # pos = nx.bipartite_layout(G, top_nodes)
+        # degrees = dict(G.degree())
+        # node_sizes = [300 + 50 * degrees[n] for n in G.nodes()]
+        # node_colors = ['tab:blue' if n in top_nodes else 'tab:orange' for n in G.nodes()]
+
+        # plt.figure(figsize=(12, 8))
+        # nx.draw(G, pos,
+        #         with_labels=True,
+        #         node_size=node_sizes,
+        #         node_color=node_colors,
+        #         edge_color='gray',
+        #         font_size=8,
+        #         width=1.2)
+        # plt.title("Weighted Bipartite Graph of Anode–Cathode Pairings")
+        # plt.axis('off')
+        # plt.show()
+
+        def on_dropdown_change(change: dict):
+            set_ = dropdown.value
+            if set_ == "all":
+                self._plot_match_results(output=plot_output, match_ratio = ratio, lpt_match_df=lpt_match_df, fr_map = fr_map, temperature = temperature)
+            else:
+                entry = lpt_match_df.iloc[[set_]]
+                self._plot_match_results(output=plot_output, match_ratio = ratio, lpt_match_df=entry, fr_map = fr_map, temperature = temperature)
+
+        dropdown.observe(on_dropdown_change, names="value")
+
+        self._plot_match_results(output=plot_output, match_ratio = ratio, lpt_match_df=lpt_match_df, fr_map = fr_map, temperature = temperature)
+
+    def _plot_match_results(self, output: widgets.Output, match_ratio: float, lpt_match_df: pd.DataFrame, fr_map: dict[str, AnodeFR | CathodeFR], temperature: float = 22):
+        with output:
+            output.clear_output()
+            fig, (ax_flow, ax_ratio) = plt.subplots(1, 2, figsize=(16, 6))
+
+            all_ratios = []
+
+            for idx in range(len(lpt_match_df)):
+                match_flow = lpt_match_df["flow"].iloc[idx]
+                match_margin = lpt_match_df["Worst Margin"].iloc[idx]
+                cathode = lpt_match_df["Cathode ID"].iloc[idx]
+                anode = lpt_match_df["Anode ID"].iloc[idx]
+                ratios = self.fr_matching_ratios[anode][cathode]
+                set_id = lpt_match_df["(Potential) Set ID"].iloc[idx]
+                anode_obj = fr_map[anode]
+
+                all_ratios.extend(ratios)
+
+                flow_line, = ax_flow.plot(
+                    fms_specifications["lpt_voltages"],
+                    match_flow,
+                    label=f"Set {set_id} – match {lpt_match_df["Match #"].iloc[idx]}, margin: {match_margin}"
+                )
+
+                ax_ratio.plot(
+                    anode_obj.pressures,
+                    ratios,
+                    color=flow_line.get_color(),
+                )
+
+            ax_flow.plot(
+                fms_specifications["lpt_voltages"],
+                fms_specifications["min_flow_rates"],
+                linestyle="--",
+                label="Min Flow Rate Spec"
+            )
+            ax_flow.plot(
+                fms_specifications["lpt_voltages"],
+                fms_specifications["max_flow_rates"],
+                linestyle="--",
+                label="Max Flow Rate Spec"
+            )
+
+            ax_flow.set_ylim(0, 6)
+            ax_flow.set_title(
+                f"Flow Rate [mg/s {anode_obj.gas_type}] vs LPT Voltage [mV]. \n LPT Reference Temperature: {temperature} ⁰C"
+            )
+            ax_flow.set_xlabel("LPT Voltage [mV]")
+            ax_flow.set_ylabel(f"Flow Rate [mg/s {anode_obj.gas_type}]")
+            ax_flow.grid(True)
+
+            ax_ratio.set_ylim(min(all_ratios) - 4, max(all_ratios) + 3)
+            ax_ratio.axhline(match_ratio + 0.5, label=f"Ratio: {match_ratio} ± 0.5", color="tab:red", linestyle="--")
+            ax_ratio.axhline(match_ratio - 0.5, color="tab:red", linestyle="--")
+
+            ax_ratio.set_title("A/C Ratios vs Inlet Pressure")
+            ax_ratio.set_xlabel("Inlet Pressure [barA]")
+            ax_ratio.set_ylabel("Anode-to-Cathode Ratio")
+            ax_ratio.grid(True)
+
+            # Legends
+            handles_flow, labels_flow = ax_flow.get_legend_handles_labels()
+            handles_ratio, labels_ratio = ax_ratio.get_legend_handles_labels()
+            fig.legend(
+                handles_flow + handles_ratio,
+                labels_flow + labels_ratio,
+                loc="lower center",
+                bbox_to_anchor=(0.5, -0.25),
+                ncol = max(len(lpt_match_df) // 4, 1)
+            )
+
+            plt.tight_layout()
+            plt.show()
+
+    def _handle_individual_set(self, flow_rates: list[float], voltages: list[float], order: int = 3) -> dict[str, Any]:
+        flow_rates = np.array(flow_rates)
+        voltages = np.array(voltages)
+        polyfit = np.polyfit(voltages, flow_rates, order)
+
+        lpt_voltages: list[float] = fms_specifications["lpt_voltages"]
+        max_flow_rates: list[float] = fms_specifications["max_flow_rates"]
+        min_flow_rates: list[float] = fms_specifications["min_flow_rates"]
+        calculated_total_flows = np.polyval(polyfit, lpt_voltages).flatten().tolist()
+        max_margin = np.array(max_flow_rates) - np.array(calculated_total_flows)
+        min_margin = np.array(calculated_total_flows) - np.array(min_flow_rates)
+        fr_data = {"set_id": "", "fms": "", "tot_flow": calculated_total_flows,
+                "max_deviation": np.average(max_margin),
+                "min_deviation": np.average(min_margin),
+                "worst_margin": np.min(np.minimum(max_margin, min_margin)),
+                "individual_pass": 1 if all(min_f <= calc_f <= max_f 
+                        for min_f, max_f, calc_f in zip(min_flow_rates, max_flow_rates, calculated_total_flows)) else 0
+                    }
+        return fr_data
+
+    def _build_set_matching_dict(
+        self,
+        matching_list: list[dict[str, Any]],
+        good_lpts: list[LPTCalibration],
+        temperature: float,
+    ) -> tuple[dict[tuple[str, str], dict[str, dict[str, Any]]], dict[tuple[str, str], Any]]:
+        """
+        Build the mapping from (anode_id, cathode_id) set identifiers to
+        LPT candidates and their associated matching data.
+
+        Returns:
+            set_matching_dict: {(anode_id, cathode_id): {lpt_id: {...}}}
+            set_id_map: mapping from (anode_id, cathode_id) to existing set_id (if any)
+        """
+        set_matching_dict: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        set_id_map: dict[tuple[str, str], Any] = {}
+
+        for _set in matching_list:
+            anode_fr: AnodeFR = _set.get("anode")
+            cathode_fr: CathodeFR = _set.get("cathode")
+            set_identifier = (anode_fr.fr_id, cathode_fr.fr_id)
+            pressures = anode_fr.pressures
+            anode_flow_rates = np.array(anode_fr.flow_rates)
+            cathode_flow_rates = np.array(cathode_fr.flow_rates)
+            tot_flow_rates = anode_flow_rates + cathode_flow_rates
+            set_matching_dict[set_identifier] = {}
+            set_id_map[set_identifier] = _set.get("set_id", None)
+            ratios = _set.get("ratios", [])
+            for lpt in good_lpts:
+                # if lpt.set_id or lpt.lpt_id.startswith("N"):
+                #     continue
+                if lpt.set_id:
+                    continue
+                voltages = self.calculate_lpt_voltage(
+                    lpt=lpt,
+                    pressures=pressures,
+                    temperature=temperature,
+                )
+                fr_data = self._handle_individual_set(tot_flow_rates, voltages)
+                if fr_data.get("individual_pass") == 1:
+                    tot_flow = fr_data.get("tot_flow", [])
+                    worst_margin = fr_data.get("worst_margin")
+                    set_matching_dict[set_identifier][lpt.lpt_id] = {
+                        "worst_margin": worst_margin,
+                        "tot_flow": tot_flow,
+                        "voltages": voltages,
+                        "ratios": ratios
+                    }
+
+        return set_matching_dict, set_id_map
+
+    def _build_lpt_matching_dataframe(
+        self,
+        set_matching_dict: dict[tuple[str, str], dict[str, dict[str, Any]]],
+        set_id_map: dict[tuple[str, str], Any],
+        max_set: int,
+    ) -> pd.DataFrame:
+        """
+        From the per-set matching dictionary, build the final LPT matching
+        DataFrame using maximum weight matching.
+        """
+        G = nx.Graph()
+        for set_id in set_matching_dict:
+            for lpt_id in set_matching_dict[set_id]:
+                weight = set_matching_dict[set_id][lpt_id]["worst_margin"]
+                G.add_edge(set_id, lpt_id, weight=weight)
+
+        matching = nx.algorithms.max_weight_matching(G, weight="weight")
+        set_ids = list(set_matching_dict.keys())
+        matching_dict: dict[tuple[str, str], str] = {}
+        for u, v in matching:
+            if u in set_ids:
+                matching_dict[u] = v
+            else:
+                matching_dict[v] = u
+
+        max_match_data = []
+        for idx, set_id in enumerate(sorted(matching_dict, key=lambda x: self._fr_id_sort_key(x[0]))):
+            lpt_id = matching_dict[set_id]
+            worst_margin = set_matching_dict[set_id][lpt_id]["worst_margin"]
+            flow = set_matching_dict[set_id][lpt_id]["tot_flow"]
+            voltages = set_matching_dict[set_id][lpt_id]["voltages"]
+            ratios = set_matching_dict[set_id][lpt_id]["ratios"]
+            set_id_check = set_id_map[set_id]
+            set_id_entry = set_id_check if set_id_check else max_set + idx + 1
+            row = {
+                "(Potential) Set ID": set_id_entry,
+                "Anode ID": set_id[0],
+                "Cathode ID": set_id[1],
+                "LPT ID": lpt_id,
+                "flow": flow,
+                "Worst Margin": f"{worst_margin:.3f}",
+                "voltages": voltages
+            }
+            for idx, i in enumerate(ratios):
+                row[f"Ratio {idx + 1}"] = f"{i:.2f}"
+
+            max_match_data.append(row)
+
+        lpt_match_df = pd.DataFrame(max_match_data)
+        lpt_match_df.sort_values(
+            by="(Potential) Set ID", key=lambda x: x.apply(int),
+        )
+        lpt_match_df.insert(0, "Match #", range(1, len(lpt_match_df) + 1))
+
+        return lpt_match_df
+
+    def match_sets_to_lpt(self, matching_list: list[dict[str, Any]], temperature: float = 22) -> pd.DataFrame | plt.figure:
+        """
+        Function that matches existing FR pairs to an LPT that makes sure the LPT Slope spec is met.
+
+        :param matching_list: List of dictionaries where each entry contains the anode_id, cathode_id and corresponding flow rates.
+        :type matching_list: list[dict[str, Any]]
+        :param temperature: LPT Reference Temperature.
+        :type temperature: float
+        """
+        good_lpts = self.query_lpt_status(get_good_lpts=True)
+        self._get_all_manifolds_with_sets()
+        max_set = max([int(i.set_id) for i in self.all_sets])
+
+        set_matching_dict, set_id_map = self._build_set_matching_dict(
+            matching_list=matching_list,
+            good_lpts=good_lpts,
+            temperature=temperature,
+        )
+
+        lpt_match_df = self._build_lpt_matching_dataframe(
+            set_matching_dict=set_matching_dict,
+            set_id_map=set_id_map,
+            max_set=max_set,
+        )
+
+        return lpt_match_df
+
 
     def lpt_certification_field(self, lpt_id: str = None) -> None:
         """
@@ -2155,13 +2450,14 @@ class ManifoldQuery:
             output.clear_output()
             self.lpt_investigation('all', lpt_id)
 
-    def lpt_investigation(self, certification: str = 'all', lpt_id: str = None) -> None:
+    def lpt_investigation(self, certification: str = 'all', lpt_id: str = None, get_lpts: bool = False) -> None:
         """
         Perform LPT investigation by plotting voltage distributions at which the pressure threshold is read.
         Args:
             certification (str): Certification batch to analyze ('all' for all batches).
             lpt_id (str): Specific LPT ID to investigate (optional).
         """
+        self._get_all_lpts()
         if self.manifold and not lpt_id:
             lpt = self.manifold.lpt[0] if self.manifold.lpt else None
             if self.fms_entry:
@@ -2189,9 +2485,6 @@ class ManifoldQuery:
         lpt_id = lpt.lpt_id if lpt else None
         signal = lpt.signal if lpt else None
         pressures = lpt.p_calculated if lpt else None
-        if not (signal and pressures) and lpt:
-            print("Incomplete LPT calibration data.")
-            return
         
         all_signals = []
         all_lpts = self.all_lpts if certification == 'all' else [i for i in self.all_lpts if i.certification == certification]
@@ -2207,19 +2500,21 @@ class ManifoldQuery:
             title = f'LPT Voltage @ {self.pressure_threshold} [bar] Distribution, LPT: {lpt_id} ({self.lpt_certification})\nCompared to \
                     {certification}' if lpt else f'LPT Voltage Distribution of {certification}'
 
-        plt.figure(figsize=(10, 5))
-        plt.hist(all_signals, bins=40, edgecolor='black')
-        if lpt:
-            plt.axvline(zero_p_voltage, color='red', linestyle='--', label=f'LPT {lpt_id} Voltage @ {self.pressure_threshold} [bar]: {zero_p_voltage:.2f} [mV]')
-        plt.axvline(self.signal_threshold, color='red', linestyle='-', label='Max Voltage: 7.5 [mV]')
-        plt.title(title)
-        plt.xlabel('Voltage [mV]')
-        plt.ylabel('Count')
-        plt.grid(True)
-        plt.legend(loc='lower center', bbox_to_anchor = (0.5,-0.25))
-        plt.show()
+        if not get_lpts:
+            plt.figure(figsize=(10, 5))
+            plt.hist(all_signals, bins=40, edgecolor='black')
+            if lpt:
+                plt.axvline(zero_p_voltage, color='red', linestyle='--', label=f'LPT {lpt_id} Voltage @ {self.pressure_threshold} [bar]: {zero_p_voltage:.2f} [mV]')
+            plt.axvline(self.signal_threshold, color='red', linestyle='-', label='Max Voltage: 7.5 [mV]')
+            plt.title(title)
+            plt.xlabel('Voltage [mV]')
+            plt.ylabel('Count')
+            plt.grid(True)
+            plt.legend(loc='lower center', bbox_to_anchor = (0.5,-0.25))
+            plt.show()
 
         self.query_lpt_status(all_lpts, lpt, certification)
+
 
     def plot_lpt_calibration(self, lpt_id: str = None) -> None:
         """
@@ -2295,6 +2590,52 @@ class ManifoldQuery:
         plt.tight_layout()
         plt.show()
 
+    def calculate_lpt_voltage(self, lpt: str | LPTCalibration, pressures: list[float], temperature: float = 22) -> list[float]:
+        """
+        Function that interpolates the LPT Calibration to find the expected
+        LPT Voltage output at given pressures and temperature.
+        
+        :param lpt_id: The identifier of the considered LPT.
+        :type lpt_id: str
+        :param temperature: The reference temperature used to find the LPT resistance.
+        :type temperature: float
+        :param pressures: List of pressures that need to be converted to voltage outputs.
+        :type pressures: list[float]
+        :return: Returns a list of LPT voltage outputs, same size as the input pressures.
+        :rtype: list[float]
+        """
+        self._get_all_lpts()
+        lpt_entry = lpt if isinstance(lpt, LPTCalibration) else next((i for i in self.all_lpts if i.lpt_id == lpt), None)
+        if not lpt_entry:
+            print(f"No data found for {lpt.lpt_id if isinstance(lpt, LPTCalibration) else lpt}")
+            return
+        
+        lpt_coefficients: list[LPTCoefficients] = lpt_entry.coefficients
+        if not lpt_coefficients:
+            print(f"No coefficient data found for {lpt.lpt_id if isinstance(lpt, LPTCalibration) else lpt}")
+            return
+        
+        calibrated_temp = np.array(lpt_entry.temp_calculated)
+        resistance = np.array(lpt_entry.resistance)
+        p_coeffs = [i for i in lpt_coefficients if i.parameter_name.endswith("_p")]
+        p_coeffs = sorted(
+            p_coeffs,
+            key=lambda x: (
+                x.parameter_name.split("_")[0][0].upper(),                 
+                int(''.join(filter(str.isdigit, x.parameter_name.split("_")[0])))  
+            )
+        )
+        p_coeffs = [i.parameter_value for i in p_coeffs]
+        temp_idx = np.argmin(np.abs(calibrated_temp - temperature))
+        resistance = resistance[temp_idx]
+        possible_U = np.linspace(0, 200, 3000)
+        U = []
+        for i in pressures:
+            trial_p = self.fms.manifold_data.calculate_pressure(R = resistance, U = possible_U, c = p_coeffs)
+            actual_U = possible_U[np.argmin(np.abs(trial_p - i))]
+            U.append(actual_U)
+        return U
+
     def get_lpt_status(self, signal: np.ndarray, pressures: np.ndarray) -> dict:
         """
         Determine the LPT status based on signal and pressure data.
@@ -2327,15 +2668,21 @@ class ManifoldQuery:
 
         return status_dict
 
-    def query_lpt_status(self, all_lpts: list[LPTCalibration], current_lpt: LPTCalibration, certification: str = 'all') -> None:
+    def query_lpt_status(self, certification: str = 'all', get_good_lpts: bool = False) -> list[LPTCalibration]:
         """
         Query the LPT status from the database.
-        Returns:
-            List of LPTCalibration entries with their status.
+
+        :param get_good_lpts: Whether to return only the LPTs within spec.
+        :return: List of LPTCalibration entries that fall within spec.
+        :rtype: list[LPTCalibration]
         """
-        lpt_status = all_lpts
+        self._get_all_lpts()
+        lpt_status = self.all_lpts
         # check = lpt_status.filter_by(lpt_id = 'P339637').first()
         # print(self.get_lpt_status(check.signal, check.p_calculated)['signal'])
+        if get_good_lpts:
+            return [entry for entry in lpt_status if entry.within_limits == LimitStatus.TRUE]
+        
         lpt_within_limits = [entry.within_limits for entry in lpt_status if entry.within_limits]
         if lpt_within_limits:
             lpt_status = [entry for entry in lpt_status if entry.within_limits == LimitStatus.FALSE]
@@ -2346,20 +2693,9 @@ class ManifoldQuery:
         signals = [self.get_lpt_status(entry.signal, entry.p_calculated)['signal'] for entry in lpt_status]
         amount = len(lpt_status)
         allocated = {entry.lpt_id: entry.manifold.allocated if entry.manifold else None for entry in lpt_status}
-        percentage = amount/(len(all_lpts) or 1) * 100
-        # allocated_dict = {
-        #     'P339637': '25-051',
-        #     'P339638': '25-052',
-        #     'P339639': '25-053',
-        #     'P339641': '25-054',
-        #     'P339583': '25-055', 
-        #     'P339584': '25-056',
-        #     'P339585': '25-057',
-        #     'P339620': '25-058',
-        #     'P339621': '25-059',
-        #     'P339625': '25-060',
-        # }
-        # manual_check = [allocated_dict.get(entry.lpt_id, None) for entry in lpt_status]
+        percentage = amount/(len(self.all_lpts) or 1) * 100
+
+
         allocated_to_fms = [allocated.get(entry.lpt_id, None) for entry in lpt_status]
         serials = {'serial_number': [entry.lpt_id for entry in lpt_status], 'allocated_to_fms': allocated_to_fms, 'signal': signals}
         df = pd.DataFrame([serials['serial_number'], serials['allocated_to_fms'], serials['signal']],
@@ -2375,6 +2711,7 @@ class ManifoldQuery:
         """
         Display certification summary for all parts related to the manifold in a concise overview.
         """
+        self._get_all_certifications()
         # Filter out None certifications and build DataFrames
         manifold_df = pd.DataFrame(
             [(c, count) for c, count in self.manifold_cert_counts if c is not None],
@@ -2433,3 +2770,4 @@ class ManifoldQuery:
         ])
 
         display(form)
+

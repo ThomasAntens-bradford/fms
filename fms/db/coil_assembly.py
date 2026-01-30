@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Integer, Column, ForeignKey
+from sqlalchemy import JSON, Integer, Column, ForeignKey, String
 from sqlalchemy.orm import relationship
 from .base import Base
 
@@ -31,6 +31,7 @@ class CoilAssembly(Base):
 
     id = Column(Integer, primary_key=True, nullable=False)
     tv_id = Column(Integer, ForeignKey("tv_status.tv_id"), unique=True, nullable=False)
+    version = Column(String(50), nullable=False)
     context = Column(JSON, nullable=True)
     adhesive_logs = Column(JSON, nullable=True)
     steps = Column(JSON, nullable=True)

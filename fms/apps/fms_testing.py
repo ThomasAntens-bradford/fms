@@ -26,7 +26,8 @@ from docx2pdf import convert
 from ..utils.general_utils import (
     load_from_json,
     save_to_json,
-    show_modal_popup
+    show_modal_popup,
+    field
 )
 
 from ..utils.enums import (
@@ -36,7 +37,8 @@ from ..utils.enums import (
     FMSFlowTestParameters, 
     FMSMainParameters
 )
-
+from sharedBE import author
+import sharedBE as be
 from .query.fms_query import FMSQuery
 from .. import FMSDataStructure
 from ..db import (
@@ -49,7 +51,12 @@ from ..db import (
     LPTCoefficients,
     FMSTvac,
     FMSFRTests,
+    ManifoldStatus,
+    AnodeFR,
+    CathodeFR
 )
+
+from ._version import version
 
 #:- Typing / Forward Declarations:-
 from typing import TYPE_CHECKING
@@ -153,7 +160,6 @@ class FMSTesting:
     :param generate_property_fields(property_name): Generates UI fields for a given property
     :param get_power_budget_fields(): Generates UI fields for power budget section
     :param get_conclusion_field(): Generates conclusion field UI component
-    :param get_annex_a(): Generates UI fields for Annex A components
     :param get_recommendations(): Generates UI & interactions for recommendations
     :param get_observations(): Generates UI & interactions for observations
     :param test_procedure(): Main procedure for testing steps and UI
@@ -164,11 +170,12 @@ class FMSTesting:
     """
 
 
-    def __init__(self, word_template_path: str = r"templates\fms_test_draft.docx", local = True,
-                 save_path: str = r"\\be.local\Doc\DocWork\99999 - FMS industrialisation\40 - Engineering\03 - Data flow\FMS Acceptance Test Reports"):
+    def __init__(self, local = True, save_path: str = r"\\be.local\Doc\DocWork\99999 - FMS industrialisation\40 - Engineering\03 - Data flow\FMS Acceptance Test Reports",
+                 fms_specs: dict = {}):
         
         self.fms = FMSDataStructure(local = local)
-        self.author = self.fms.author
+        self.procedure_name = "fms_acceptance_testing_procedure"
+        self.author = author
         self.session: "Session" = self.fms.Session()
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
         self.img_path = os.path.join(self.current_dir, "images", "bradford_logo.jpg")
@@ -183,7 +190,6 @@ class FMSTesting:
         self.header_output = widgets.Output()
         self.container = widgets.VBox()
         self.tvac_loop = None
-        self.template_path = os.path.join(self.current_dir, word_template_path)
         self.tvac_type = None
         self.continue_list = []
         self.current_test_type: FunctionalTestType = None
@@ -192,18 +198,18 @@ class FMSTesting:
         self.test_types = []
         self.draft_fms_ids = []
         self.context = {}
-        self.fms_query = FMSQuery(local = local)
+        self.fms_query = FMSQuery(local = local, **fms_specs)
         self.main_test_results = defaultdict(dict)
         self.draft_json_dir = os.path.join(self.current_dir, "json_files")
-        # self.test_info = self.fms.load_procedure(procedure_name="fms_test_draft")
-        self.test_info = load_from_json("fms_test_draft", directory = self.draft_json_dir)
+        self.test_info = {}
+
         self.all_test_info: list[FMSAcceptanceTests] = (
             self.session.query(FMSAcceptanceTests)
             .filter(FMSAcceptanceTests.report_generated == False)
             .order_by(FMSAcceptanceTests.id.asc())
             .all()
         )
-        
+
         if self.all_test_info:
             self.draft_fms_ids = [t.fms_id for t in self.all_test_info]
             self.fms_id = self.draft_fms_ids[0]
@@ -234,6 +240,19 @@ class FMSTesting:
             "inductance": {"limit": "mH", "actual": "mH"}
         }
         display(self.header_output)
+
+        self.procedures = self._get_procedures()
+        self.procedure: be.db.ProceduresTable = None
+
+    def _get_procedures(self) -> list[be.db.ProceduresTable]:
+        """
+        Function that gets all the procedure versions of the FMS acceptance testing procedure.
+        
+        :return: List of 
+        :rtype: list
+        """
+        procedures = be.procedures.get_procedure_by_name(procedure_name=self.procedure_name)
+        return procedures
 
     def get_unit(self, subdict: str, prop_key: str, unit_type: str = "actual") -> str:
         """
@@ -283,6 +302,7 @@ class FMSTesting:
                 selected_fms_id = change['new']
                 self.fms_id = selected_fms_id if selected_fms_id else None
                 self.start_testing()
+                self.fms_query.fms_id = self.fms_id
 
         self.all_fms_field.observe(on_fms_change, names='value')
 
@@ -349,7 +369,7 @@ class FMSTesting:
 
         return
 
-    def get_test_info(self, fms_id: str) -> dict:
+    def get_test_info(self, fms_id: str, version: str = "", project: str = "") -> dict:
         """
         Retrieves the acceptance test procedure and status for a given FMS ID.
         Args:
@@ -359,7 +379,7 @@ class FMSTesting:
         """
         existing_entry: FMSAcceptanceTests = (
             self.session.query(FMSAcceptanceTests)
-            .filter_by(fms_id=fms_id)
+            .filter_by(fms_id=fms_id, version=version)
             .first()
         )
         # test_info = load_from_json(f"back_up_{fms_id}")
@@ -385,27 +405,31 @@ class FMSTesting:
             self.current_subdict = existing_entry.current_subdict or None
             return existing_entry.raw_json if existing_entry.raw_json else {}
         
-        # test_info = self.fms.load_procedure(procedure_name="fms_test_draft")
-        test_info = load_from_json("fms_test_draft", directory = self.draft_json_dir)
+        # test_info = self.fms.load_procedure(procedure_name="fms_acceptance_testing_procedure")
+        procedure = next((i for i in self.procedures if i.version == version and i.project == project), {})
+        test_info = procedure.json_script
         fms_entry = self.session.query(FMSMain).filter_by(fms_id=fms_id).first()
-        test_info["hpiv_id"] = fms_entry.hpiv_id if fms_entry else None
-        test_info["tv_id"] = fms_entry.tv_id if fms_entry else None
-        test_info["lpt_id"] = fms_entry.lpt_id if fms_entry else None
-        test_info["anode_fr_id"] = fms_entry.anode_fr_id if fms_entry else None
-        test_info["cathode_fr_id"] = fms_entry.cathode_fr_id if fms_entry else None
-        test_info["gas_type"] = fms_entry.gas_type if fms_entry else None
-        test_info["gas"] = "Xenon" if fms_entry and fms_entry.gas_type and "xe" in fms_entry.gas_type.lower() else "Krypton"
-        test_info["ratio"] = fms_entry.manifold[0].ac_ratio_specified if fms_entry and fms_entry.manifold else None
-        test_info["author"] = self.author
-        lpt: list[LPTCoefficients] = fms_entry.manifold[0].lpt[0].coefficients if fms_entry and fms_entry.manifold and fms_entry.manifold[0].lpt else None
-        if lpt:
-            for coef in lpt:
-                val = coef.parameter_value
-                if abs(val) < 0.0001 and val != 0:
-                    val = f"{val:.3E}"
-                else:
-                    val = f"{val:.5f}"
-                test_info[coef.parameter_name] = val
+        test_info["report_path"] = os.path.join(self.current_dir, procedure.report_path)
+        if fms_entry:
+            test_info["hpiv_id"] = fms_entry.hpiv_id 
+            test_info["tv_id"] = fms_entry.tv_id 
+            test_info["lpt_id"] = fms_entry.lpt_id 
+            test_info["anode_fr_id"] = fms_entry.anode_fr_id 
+            test_info["cathode_fr_id"] = fms_entry.cathode_fr_id 
+            test_info["gas_type"] = fms_entry.gas_type 
+            test_info["gas"] = "Xenon" if fms_entry.gas_type and "xe" in fms_entry.gas_type.lower() else "Krypton"
+            test_info["ratio"] = fms_entry.manifold[0].ac_ratio_specified if fms_entry.manifold else None
+            test_info["author"] = self.author
+            test_info["project"] = project
+            lpt: list[LPTCoefficients] = fms_entry.manifold[0].lpt[0].coefficients if fms_entry.manifold and fms_entry.manifold[0].lpt else None
+            if lpt:
+                for coef in lpt:
+                    val = coef.parameter_value
+                    if abs(val) < 0.0001 and val != 0:
+                        val = f"{val:.3E}"
+                    else:
+                        val = f"{val:.5f}"
+                    test_info[coef.parameter_name] = val
         self.fms_limits = get_limits_from_db()
         return test_info
 
@@ -484,7 +508,7 @@ class FMSTesting:
                 existing_entry.current_test_type = current_test_type
             existing_entry.current_subdict = current_subdict
         else:
-            new_entry = FMSAcceptanceTests(fms_id=self.fms_id, raw_json=self.test_info)
+            new_entry = FMSAcceptanceTests(fms_id=self.fms_id, raw_json=self.test_info, version=self.procedure.version)
             self.session.add(new_entry)
         if next_step:
             existing_limits = self.session.query(FMSLimits).filter_by(fms_id=self.fms_id).first()
@@ -496,6 +520,7 @@ class FMSTesting:
                     limits = self.fms_limits
                 )
                 self.session.add(new_limits)
+
             if len(self.main_test_results) > 0:
                 existing_entries = self.session.query(FMSTestResults).filter_by(fms_id=self.fms_id).all()
                 existing_parameters = []
@@ -534,7 +559,7 @@ class FMSTesting:
         return dict(description=description,
                     layout=widgets.Layout(width=field_width, height=height),
                     style={'description_width': label_width})
-    
+        
     def start_testing(self) -> None:
         """
         Starts the FMS Acceptance Testing procedure UI.
@@ -553,13 +578,36 @@ class FMSTesting:
             **self.field("Author:"),
         )
 
+        def version_sum(version_str: str) -> int:
+            return sum([int(i) for i in version_str.split(".")])
+
+        def format_versions(entry: be.db.ProceduresTable) -> tuple[str]:
+            idx = self.procedures.index(entry)
+            if version in entry.code_versions:
+                return (f"{entry.version} ({entry.project})", entry.version) if idx != 0 else (f"{entry.version} ({entry.project}), Latest", entry.version)
+            if version_sum(entry.version) > version_sum(version):
+                return (f"{entry.version} ({entry.project}), Update Required", entry.verstion)
+            return None
+        
+        procedure_options = [format_versions(i) for i in self.procedures]
+        procedure_version = widgets.Dropdown(
+            options = procedure_options,
+            value = procedure_options[0][1],
+            **self.field("Procedure Version:")
+        )
+
+        project_widget = widgets.Text(
+            value=self.test_info.get('project', ""),
+            **self.field("Project:"),
+        )
+
         tvac_box = widgets.Checkbox(
-            value=self.test_info.get('tvac', False),
+            value=self.test_info.get('tvac', True),
             **self.field("Perform TVAC?:")
         )
 
         vibration_box = widgets.Checkbox(
-            value=self.test_info.get('vibration', False),
+            value=self.test_info.get('vibration', True),
             **self.field("Perform Vibration?:")
         )
         def on_field_change(change: dict) -> None:
@@ -567,7 +615,20 @@ class FMSTesting:
             self.test_info['vibration'] = vibration_box.value
             self.test_info['tvac'] = tvac_box.value
 
-        self.fms_id_widget.observe(on_field_change, names='value')
+        def on_fms_change(change: dict) -> None:
+            if change["new"] != change["old"]:
+                fms_id = change["new"]
+                fms_check = self.session.query(FMSAcceptanceTests).filter_by(fms_id = fms_id).first()
+                if fms_check:
+                    if fms_check.version:
+                        procedure_version.value = fms_check.version
+                    test_info = fms_check.raw_json
+                    if test_info:
+                        project = test_info.get("project", "")
+                        if project:
+                            project_widget.value = project
+
+        self.fms_id_widget.observe(on_fms_change, names='value')
         tvac_box.observe(on_field_change, names='value')
         vibration_box.observe(on_field_change, names='value')
 
@@ -578,10 +639,28 @@ class FMSTesting:
             """
             self.output.clear_output()
             self.fms_id = self.fms_id_widget.value
+            self.fms_query.fms_id = self.fms_id
+            project = project_widget.value
+            procedure_entry = next((i for i in self.procedures if i.version == procedure_version.value and i.project == project), None)
             with self.output:
                 if not self.fms_id_widget.value or not re.match(r'^\d{2}-\d{3}$', str(self.fms_id_widget.value)):
                     print("Please enter a valid FMS ID (##-###).")
                     return
+                if not project:
+                    print("Please fill in the corresponding project number for this assembly.")
+                    return
+                
+            if not procedure_entry or not procedure_entry.project == project:
+                with self.output:
+                    print("Please select the procedure with the corresponding project number.")
+                    return
+            
+            if version_sum(procedure_entry.version) > version_sum(version):
+                with self.output:
+                    print("Incompatible version: update required")
+                    return
+                
+            self.procedure = procedure_entry
                 
             if not self.fms_id in self.all_fms_field.options:
                 self.all_fms_field.options = list(self.all_fms_field.options) + [self.fms_id]
@@ -591,9 +670,9 @@ class FMSTesting:
             if not self.all_fms_field.value == self.fms_id:
                 self.all_fms_field.value = self.fms_id
 
-            self.test_info = self.get_test_info(self.fms_id)
+            self.test_info = self.get_test_info(self.fms_id, version = procedure_entry.version, project = project)
             self.test_types = [k for k in self.test_info.keys() if isinstance(self.test_info[k], dict)\
-                                and not "data" in k] + ["conclusion", "observations", "recommendations", "annex_a"]
+                                and not "data" in k] + ["conclusion", "observations", "recommendations"]
 
             self.test_info["fms_id"] = self.fms_id
             if not self.current_test_type:
@@ -615,7 +694,7 @@ class FMSTesting:
         form = widgets.VBox(
             [
                 title,
-                widgets.VBox([self.fms_id_widget, author, widgets.HBox([tvac_box, vibration_box])]),
+                widgets.VBox([self.fms_id_widget, author, procedure_version, project_widget, widgets.HBox([tvac_box, vibration_box])]),
                 start_button,
                 self.output
             ],
@@ -925,7 +1004,6 @@ class FMSTesting:
         """
         if form is None:
             form = widgets.VBox(layout=widgets.Layout(spacing="50px"))
-        self.fms_query.load_all_tests(fms_id=self.fms_id)
 
         def get_container():
             return self.test_info[test_type] if not self.tvac_loop else self.test_info[test_type][subdict]
@@ -953,14 +1031,14 @@ class FMSTesting:
             self.save_current_state()
 
         test_map: dict[str, list[FMSFunctionalTests | FMSTvac | FMSFRTests]] = {
-            'low_closed_loop_plot': [f for f in self.fms_query.get_closed_loop_tests() if f.test_type == FunctionalTestType.LOW_CLOSED_LOOP],
-            'low_slope_plot': [f for f in self.fms_query.get_slope_tests() if f.test_type == FunctionalTestType.LOW_SLOPE],
-            'fr_performance_plot': self.fms_query.get_fr_tests(),
-            'tvac_summary_plot': self.fms_query.get_tvac_tests(),
-            'high_closed_loop_plot': [f for f in self.fms_query.get_closed_loop_tests() if f.test_type == FunctionalTestType.HIGH_CLOSED_LOOP],
-            'high_slope_plot': [f for f in self.fms_query.get_slope_tests() if f.test_type == FunctionalTestType.HIGH_SLOPE],
-            'high_open_loop_plot': [f for f in self.fms_query.get_open_loop_tests() if f.test_type == FunctionalTestType.HIGH_OPEN_LOOP],
-            'low_open_loop_plot': [f for f in self.fms_query.get_open_loop_tests() if f.test_type == FunctionalTestType.LOW_OPEN_LOOP],
+            'low_closed_loop_plot': [f for f in self.fms_query.get_closed_loop_tests(self.fms_id) if f.test_type == FunctionalTestType.LOW_CLOSED_LOOP],
+            'low_slope_plot': [f for f in self.fms_query.get_slope_tests(self.fms_id) if f.test_type == FunctionalTestType.LOW_SLOPE],
+            'fr_performance_plot': self.fms_query.get_fr_tests(self.fms_id),
+            'tvac_summary_plot': self.fms_query.get_tvac_tests(self.fms_id),
+            'high_closed_loop_plot': [f for f in self.fms_query.get_closed_loop_tests(self.fms_id) if f.test_type == FunctionalTestType.HIGH_CLOSED_LOOP],
+            'high_slope_plot': [f for f in self.fms_query.get_slope_tests(self.fms_id) if f.test_type == FunctionalTestType.HIGH_SLOPE],
+            'high_open_loop_plot': [f for f in self.fms_query.get_open_loop_tests(self.fms_id) if f.test_type == FunctionalTestType.HIGH_OPEN_LOOP],
+            'low_open_loop_plot': [f for f in self.fms_query.get_open_loop_tests(self.fms_id) if f.test_type == FunctionalTestType.LOW_OPEN_LOOP],
         }
 
         function_map = {
@@ -998,6 +1076,9 @@ class FMSTesting:
                 children.remove(extra_plot_button)
             form.children = children
 
+        def on_poly_order_change(value):
+            self.test_info["fr_performance_voltage_plot"] = value
+
         def create_plot_block(is_primary: bool = False, preset_test_id: str = None, preset_image: bytes = None, preset_show_response: bool = False) -> widgets.Widget:
             """
             Creates a plot selection block for the functional test plots.
@@ -1032,6 +1113,8 @@ class FMSTesting:
                 indent=False
             )
 
+            extra_plot_output = widgets.Output()
+
             image_widget = widgets.Image(layout=widgets.Layout(width='800px', height='600px'))
             if preset_image:
                 image_widget.value = preset_image.read() if hasattr(preset_image, 'read') else preset_image
@@ -1045,6 +1128,13 @@ class FMSTesting:
                 initial_children.append(response_times_checkbox)
             if is_primary and preset_image:
                 initial_children.append(image_widget)
+            if 'fr' in prop_key:
+                initial_children.append(extra_plot_output)
+                self.fms_query.add_listener(on_poly_order_change)
+                if preset_test_id:
+                    with extra_plot_output:
+                        extra_plot_output.clear_output()
+                        self.fms_query.plot_fr_voltage(fms_id=self.fms_id, test_id = preset_test_id, listen_order=True, initial_order=self.test_info.get("fr_performance_voltage_plot", 3))
             if not is_primary and preset_test_id:
                 initial_children += [image_widget, delete_button]
 
@@ -1070,14 +1160,25 @@ class FMSTesting:
                     else:
                         if "closed_loop" in key:
                             image_bytes = function_map[key](selected_test_id, plot=False, show_response_times=show_response_times)
+                        elif "fr" in key:
+                            image_bytes, table_data = self.fms_query.plot_fr_characteristics(fms_id = self.fms_id, test_id = selected_test_id, plot = False, get_table = True)
+                            with extra_plot_output:
+                                extra_plot_output.clear_output()
+                                self.fms_query.plot_fr_voltage(test_id = preset_test_id, fms_id = self.fms_id, listen_order=True)
+
+                            self.test_info["fr_summary"] = table_data
+                            self.test_info["lpt_temp"] = f"{np.mean(self.fms_query.lpt_temp):.1f}" if self.fms_query.lpt_temp else ""
                         else:
-                            image_bytes = function_map[key](selected_test_id, plot=False) if not "open_loop" in key else function_map[key](selected_test_id, test_type='open_loop', plot=False)
+                            image_bytes = function_map[key](selected_test_id, plot=False) if not "open_loop"\
+                                  in key else function_map[key](selected_test_id, test_type='open_loop', plot=False)
                         encoded = self.encode_image(image_bytes) if image_bytes else None
                         container[prop_key] = {
                             'test_id': selected_test_id,
                             'image': encoded,
-                            'show_response_times': show_response_times
                         }
+                        if "closed_loop" in key:
+                            container[prop_key]['show_response_times'] = show_response_times
+
                         children = [dropdown]
                         if 'closed_loop' in prop_key:
                             children.append(response_times_checkbox)
@@ -1085,6 +1186,8 @@ class FMSTesting:
                             image_widget.value = image_bytes.read()
                             image_widget.format = 'png'
                             children.append(image_widget)
+                        if 'fr_performance' in prop_key:
+                            children.append(extra_plot_output)
                         container_widget.children = children
                     form.children = [container_widget]
                 else:
@@ -1211,8 +1314,7 @@ class FMSTesting:
             at key points in FMS flow testing.
         """
 
-        self.fms_query.load_all_tests(fms_id=self.fms_id)
-        slope_tests = self.fms_query.get_slope_tests()
+        slope_tests = self.fms_query.get_slope_tests(fms_id = self.fms_id)
         keys_list = [
             "tv_full_open",
             "tv_full_open_power",
@@ -1456,98 +1558,6 @@ class FMSTesting:
         conclusion_area.observe(update_conclusion, names='value')
 
         return widgets.VBox([conclusion_area, widgets.VBox([], layout=widgets.Layout(height="20px"))])
-
-    def get_annex_a(self, annex_a_start: int = 0, property_nav: widgets.Dropdown | None = None):
-        """
-        Generates widgets for navigating and editing Annex A components.
-        Args:
-            annex_a_start (int): The starting index for the Annex A components.
-            property_nav (widgets.Dropdown | None): The dropdown widget for navigating components.
-        Returns:
-            widgets.VBox: A VBox widget containing the Annex A component navigation and editing widgets.
-        """
-        annex_a_components = self.test_info.get("annex_a", [])
-        current_idx = annex_a_start
-
-        component_box = widgets.VBox(layout=widgets.Layout(margin="10px"))
-
-        def build_component_widget(idx: int) -> None:
-            component_dict = annex_a_components[idx]
-            fields = []
-            property_nav.value = idx
-            for key, value in component_dict.items():
-                description = " ".join(word.capitalize() for word in key.split("_")) + ":"
-
-                if "date" in key.lower():
-                    if value:
-                        try:
-                            parsed_date = datetime.strptime(value, "%Y-%m-%d").date()
-                        except ValueError:
-                            parsed_date = datetime.strptime(value, "%d-%m-%Y").date()
-                    else:
-                        parsed_date = None
-
-                    field = widgets.DatePicker(
-                        value=parsed_date,
-                        **self.field(description, "500px", "150px")
-                    )
-                else:
-                    field = widgets.Textarea(
-                        value=value if value else "",
-                        **self.field(description, "500px", "150px")
-                    )
-
-                def make_observer(field_key, f):
-                    def observer(change):
-                        if change['name'] == 'value':
-                            annex_a_components[idx][field_key] = (
-                                f.value.strftime("%d-%m-%Y") if isinstance(f, widgets.DatePicker) and f.value else f.value
-                            )
-                            self.test_info["annex_a"] = annex_a_components
-                            self.save_current_state()
-                    return observer
-
-                field.observe(make_observer(key, field), names='value')
-                fields.append(field)
-
-            component_box.children = fields
-
-        def all_fields_filled() -> bool:
-            for f in component_box.children:
-                if isinstance(f, widgets.Textarea) and not f.value.strip():
-                    with self.output:
-                        self.output.clear_output()
-                        print("Please fill in all fields before proceeding to the next component.")
-                    return False
-                if isinstance(f, widgets.DatePicker) and not f.value:
-                    with self.output:
-                        self.output.clear_output()
-                        print("Please fill in all fields before proceeding to the next component.")
-                    return False
-            return True
-
-        def on_next(_) -> None:
-            nonlocal current_idx
-            if not all_fields_filled():
-                return  
-            current_idx = (current_idx + 1) % len(annex_a_components)
-            build_component_widget(current_idx)
-
-        def on_prev(_) -> None:
-            nonlocal current_idx
-            current_idx = (current_idx - 1) % len(annex_a_components)
-            build_component_widget(current_idx)
-
-        prev_btn = widgets.Button(description="Previous", button_style='danger', icon='arrow-left')
-        next_btn = widgets.Button(description="Next", button_style='info', icon='arrow-right')
-        prev_btn.on_click(on_prev)
-        next_btn.on_click(on_next)
-        nav_box = widgets.HBox([prev_btn, next_btn], layout=widgets.Layout(margin="10px 0px 0px 0px"))
-
-        if annex_a_components:
-            build_component_widget(current_idx)
-
-        return widgets.VBox([component_box, nav_box])
     
     def get_recommendations(self) -> widgets.VBox:
         """
@@ -1958,22 +1968,18 @@ class FMSTesting:
             self.check_tvac(current_test_type)
             if change['name'] == 'value':
                 selected_key = change['new']
-                if not current_test_type == "annex_a":
-                    props, subdict_map = self.flatten_props(current_test_type)
-                    if selected_key in props:
-                        current_property_index = props.index(selected_key)
-                        build_form()
-                else:
-                    build_form(annex_a_start=selected_key)
+                props, subdict_map = self.flatten_props(current_test_type)
+                if selected_key in props:
+                    current_property_index = props.index(selected_key)
+                    build_form()
 
         property_nav.observe(on_property_nav_change, names='value')
 
-        def build_form(previous: bool = False, annex_a_start: int = 0) -> None:
+        def build_form(previous: bool = False) -> None:
             """
             Builds the form for the current property.
             Args:
                 previous (bool): Whether to navigate to the previous property.
-                annex_a_start (int): The starting index for Annex A components.
             """
             nonlocal current_property_index, current_test_type, current_subdict
             self.tvac_loop = None
@@ -1990,15 +1996,11 @@ class FMSTesting:
                 elif current_test_type == "observations":
                     property_nav.options = []
                     widget = self.get_observations()
-                elif current_test_type == "annex_a":
-                    property_nav.options = [(i["component"].title(), idx) for idx, i in enumerate(self.test_info['annex_a'])]
-                    property_nav.value = annex_a_start
-                    next_btn.description = "Finish"
-                    next_btn.button_style = 'info'
-                    widget = self.get_annex_a(annex_a_start, property_nav)
                 elif current_test_type == "recommendations":
                     property_nav.options = []
                     widget = self.get_recommendations()
+                    next_btn.description = "Finish"
+                    next_btn.button_style = 'info'
                 else:
                     widget = widgets.HTML(value=f"<b>No properties found for {current_test_type}</b>")
                 title_html.value = f"<h2>{current_test_type.replace('_',' ').title()}</h2>"
@@ -2291,19 +2293,20 @@ class FMSTesting:
                         img_bytes = self.decode_image(v["image"])
                         if not bool(img_bytes.getvalue()):
                             continue
-                        if not "setup" in k:
+                        if not "setup" in k and not k in self.context:
                             self.context[k] = InlineImage(template, img_bytes, width=Mm(145))
-                        else:
+                        elif not k in self.context:
                             self.context[k] = InlineImage(template, img_bytes, width=Mm(80))
                         for sub_k, sub_v in v.items():
-                            if sub_k != "image":
+                            if sub_k != "image" and not sub_k in self.context:
                                 self.context[sub_k] = sub_v
                         continue
 
                     process_dict(v)
 
                 else:
-                    self.context[k] = v
+                    if not k in self.context:
+                        self.context[k] = v
 
         for key, value in self.test_info.items():
             if isinstance(value, dict):
@@ -2426,7 +2429,8 @@ class FMSTesting:
                     s = "> " + str(self.context[parameter])
                     self.context[parameter] = s
             if unit == "GOhm":
-                value = value * 1e9
+                if isinstance(value, float):
+                    value = value * 1e9
             if min_value is not None and value < min_value and parameter not in self.continue_list:
                 all_passed = False
                 with self.output:
@@ -2475,10 +2479,80 @@ class FMSTesting:
     
     def _get_closed_loop_context(self) -> None:
         """
-        Function that uses the FMSQuery class to collect the closed loop data and formats the data for the report
+        Helper function that uses the FMSQuery class to collect the closed loop data and formats the data for the report.
         """
-        self.context["closed_loop_data"] = self.fms_query.closed_loop_analysis(show_table = False)
+        data = self.fms_query.closed_loop_analysis(show_table = False)
+        self.context["closed_loop_data"] = data
+
+    def _get_tv_slope_context(self) -> None:
+        """
+        Helper function that uses the FMSQuery class to collect the TV slope data and formats the data for the report.
+        """
+        data = self.fms_query.tv_slope_analysis(get_table=True, correction=True)
+        self.context["slope"] = data
+
+    def _get_FR_context(self, template: DocxTemplate = None) -> None:
+        """
+        Helper function that uses the FMSQuery class to collect the FR individual performance, performance summary and spec performance.
+        """
+        fms_entry = self.session.query(FMSMain).filter_by(fms_id=self.fms_id).first()
+        if not fms_entry:
+            return 
+        
+        # Individual FR Performance
+        manifold: ManifoldStatus = fms_entry.manifold[0] if fms_entry.manifold else None
+        if not manifold:
+            return 
+        
+        anode: AnodeFR = manifold.anode[0] if manifold.anode else None
+        cathode: CathodeFR = manifold.cathode[0] if manifold.cathode else None
+        if not anode or not cathode:
+            return 
+        
+        anode_flow = anode.flow_rates
+        cathode_flow = cathode.flow_rates
+        pressures = anode.pressures
+        if not anode_flow or not cathode_flow:
+            return 
+        
+        fr_data = []
+        for idx, (flow_a, flow_c) in enumerate(zip(anode_flow, cathode_flow)):
+            row = {
+                "flow_a": f"{flow_a:.3f}",
+                "flow_c": f"{flow_c:.3f}",
+                "ac_ratio": round(flow_a/flow_c, 2),
+                "tot_flow": f"{flow_a + flow_c:.3f}",
+                "pressure": f"{pressures[idx]:.1f}"
+            }
+            fr_data.append(row)
+
+        self.context["fr_data"] = fr_data
+
+        fr_voltage_order = self.test_info.get("fr_performance_voltage_plot", 3)
+        if fr_voltage_order:
+            test_id = self.test_info.get('functional_performance', {}).get('fr_performance_plot', {}).get('test_id', "")
+            if test_id:
+                img_bytes, table_data = self.fms_query.plot_fr_voltage(test_id = test_id, fms_id = self.fms_id, initial_order = fr_voltage_order, plot = False)
+                plot = InlineImage(template, img_bytes, width=Mm(145))
+                self.context["fr_performance_voltage_plot"] = plot
+                self.context["fr_voltage"] = table_data
+
+    def get_test_tools_context(self) -> None:
+        """
+        Checks whether the registered test tools are valid, and if so adds them to the report context.
+        """
+        default_components = self.test_info.get("annex_a")
+        grouped_tools = be.tools.group_tools_by_description(descriptions = default_components)
+        default_tools = []
+        for tool, entries in grouped_tools.items():
+            tool_entry = entries[0]
+            tool_entry["component"] = tool.replace("_", " ").title()
+            tool_entry["last_calibration_date"] = datetime.strftime(tool_entry["last_calibration_date"], "%d-%m-%Y") if tool_entry["last_calibration_date"] else ""
+            tool_entry["next_calibration_date"] = datetime.strftime(tool_entry["next_calibration_date"], "%d-%m-%Y") if tool_entry["next_calibration_date"] else ""
+            default_tools.append({key: val for key, val in tool_entry.items()})
             
+        self.context["test_tools"] = default_tools
+
     def generate_context(self) -> None:
         """
         Generates the report context, the report itself and saves the resulting Word document.
@@ -2486,13 +2560,12 @@ class FMSTesting:
         with self.output:
             print("Checking compliance and generating report structure...")
 
-        template = DocxTemplate(self.template_path)
-        self.test_info["project"] = "23026"
+        template = DocxTemplate(self.test_info["report_path"])
         save_to_json(self.test_info, f"back_up_{self.fms_id}")
         self.get_tvac_context(template)
         self.get_power_budget_context()
-        self.context["annex_a"] = self.test_info.get("annex_a", [])
         self.get_physical_properties_context()
+        self.get_test_tools_context()
         self.get_leftover_context(template)
 
         date = datetime.now()
@@ -2501,12 +2574,14 @@ class FMSTesting:
         self.context.pop("date", None)
         self.context["date_header"] = date_header
         self.context["date_front"] = date_front
-        self._get_closed_loop_context()
 
-        if not self.check_all_compliance():
-            with self.output:
-                print("Compliance check failed. Report generation aborted.")
-            return
+        # if not self.check_all_compliance():
+        #     with self.output:
+        #         print("Compliance check failed. Report generation aborted.")
+        #     return
+        self._get_closed_loop_context()
+        self._get_FR_context(template = template)
+        self._get_tv_slope_context()
 
         word_filename = self.get_new_filename()
 
@@ -2547,8 +2622,8 @@ class FMSTesting:
         self.all_fms_field.options = [i.fms_id for i in self.all_test_info if not i.fms_id == self.fms_id]
         self.all_fms_field.value = None
         self.fms_id = ""
-        # self.test_info = self.fms.load_procedure(procedure_name="fms_test_draft")
-        self.test_info = load_from_json("fms_test_draft", directory = self.draft_json_dir)
+        # self.test_info = self.fms.load_procedure(procedure_name="fms_acceptance_testing_procedure")
+        self.test_info = load_from_json("fms_acceptance_testing_procedure", directory = self.draft_json_dir)
         self.current_test_type = self.test_types[0]
         self.current_property_index = 0
         self.current_subdict = None
@@ -2573,3 +2648,4 @@ class FMSTesting:
 
         fms_entry.status = FMSProgressStatus.TESTING_COMPLETED
         self.session.commit()
+

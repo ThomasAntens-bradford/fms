@@ -28,8 +28,8 @@ class FMSFRTests(Base):
         List of cathode flow rates recorded during the test, in mg/s.
     total_flow : JSON
         List of total flow rates recorded during the test, in mg/s.
-    ac_ratio : JSON
-        List of anode to cathode flow ratios recorded during the test.
+    lpt_temp : JSON
+        List of LPT temperatures recorded during the test.
     tv_power : JSON
         List of TV power readings recorded during the test, in W.
     tv_temp : JSON
@@ -62,7 +62,7 @@ class FMSFRTests(Base):
     anode_flow = Column(JSON, nullable=True)
     cathode_flow = Column(JSON, nullable=True)
     total_flow = Column(JSON, nullable=True)
-    ac_ratio = Column(JSON, nullable=True)
+    lpt_temp = Column(JSON, nullable=True)
     tv_power = Column(JSON, nullable=True)
     tv_temp = Column(JSON, nullable=True)
     inlet_pressure = Column(Float, nullable=True)

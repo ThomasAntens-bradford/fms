@@ -9,6 +9,7 @@ from .. import FMSDataStructure
 from ..db import AnodeFR, CathodeFR  
 from ..utils.general_utils import field, show_modal_popup
 import sharedBE as be
+from sharedBE import operator
 from .query import ManifoldQuery
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -319,7 +320,7 @@ class FRTesting:
             self._radius_widget.value = fr_data.get('radius', 0) or 0
             self._orifice_widget.value = fr_data.get('orifice_diameter', 0) or 0
             self._thickness_widget.value = fr_data.get('thickness', 0) or 0
-            self._operator_widget.value = fr_data.get('operator') or self.fms.operator
+            self._operator_widget.value = fr_data.get('operator') or operator
             self._drawing_widget.value = fr_data.get('drawing') or (
                 self.fr_data.anode_drawing if self._fr_widget.value == "Anode" else self.fr_data.cathode_drawing
             )
@@ -683,7 +684,7 @@ class FRTesting:
         )
 
         self._operator_widget = widgets.Text(
-            value=self.fms.operator,
+            value=operator,
             **field("Operator:"),
             disabled=True
         )

@@ -1,0 +1,3 @@
+PACKAGE_TYPE = "product"
+DATABASE = "db"
+DB_HANDLER = "FMSDataStructure"
