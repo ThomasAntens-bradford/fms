@@ -238,17 +238,17 @@ class FMSDataStructure:
         self.hpiv_found = False
 
         self.certification_listener = None
-        Base.metadata.create_all(self.engine)
+        self._check_to_initialize_db()
 
 
-    # def _check_to_initialize_db(self) -> None:
-    #     """
-    #     Checks if the database tables exist; if not, initializes the database.
-    #     """
-    #     inspector = inspect(self.engine)
-    #     tables = inspector.get_table_names()
-    #     if not tables:
-    #         Base.metadata.create_all(self.engine)
+    def _check_to_initialize_db(self) -> None:
+        """
+        Checks if the database tables exist; if not, initializes the database.
+        """
+        inspector = inspect(self.engine)
+        tables = inspector.get_table_names()
+        if not tables:
+            Base.metadata.create_all(self.engine)
 
     def print_table_structures(self) -> None:
         """
@@ -280,31 +280,6 @@ class FMSDataStructure:
             self.certification_listener.observer.stop()
             self.certification_listener.observer.join()
 
-    def listen_to_hpiv_data(self, hpiv_data_packages: str = "") -> None:
-        """
-        Start listening for new HPIV data packages.
-        This method initializes a thread to monitor the HPIV data packages
-        directory for new or modified files.
-        """
-        if not hpiv_data_packages:
-            hpiv_data_packages = os.path.join(self.absolute_data_dir, "HPIV_data_packages")
-        self.hpiv_data_thread = threading.Thread(target=self.hpiv_sql.listen_to_hpiv_data, args=(hpiv_data_packages,), daemon=False)
-        self.hpiv_data_thread.start()
-
-    def listen_to_tv_test_results(self, tv_test_runs: str = r"") -> None:
-        """
-        Start listening for new TV test results.
-        This method initializes a thread to monitor the TV test results
-        directory for new or modified files.
-        Args:
-            tv_test_runs (str): Path to the directory containing TV test runs.
-        """
-        if not tv_test_runs:
-            tv_test_runs = os.path.join(self.absolute_data_dir, r"TV_test_runs")
-        self.tv_sql.listen_to_tv_test_results(tv_test_runs = tv_test_runs)
-        # self.tv_test_thread = threading.Thread(target=self.tv_sql.listen_to_tv_test_results, args=(tv_test_runs,), daemon=False)
-        # self.tv_test_thread.start()
-
     def add_tv_electrical_data(self, electrical_data: str = "") -> None:
         """
         Add TV electrical data to the database.
@@ -314,19 +289,6 @@ class FMSDataStructure:
         if not electrical_data:
             electrical_data = os.path.join(self.absolute_data_dir, "Electrical_data")
         self.tv_sql.add_electrical_data(electrical_data = electrical_data)
-
-    def listen_to_lpt_calibration(self, lpt_calibration: str = "") -> None:
-        """
-        Start listening for new LPT manifold calibration data.
-        This method initializes a thread to monitor the LPT manifold
-        calibration directory for new or modified files.
-        Args:
-            lpt_calibration (str): Path to the directory containing LPT calibration data.
-        """
-        if not lpt_calibration:
-            lpt_calibration = os.path.join(self.absolute_data_dir, "LPT_data/LPT_coefficient_data")
-        self.lpt_calibration_thread = threading.Thread(target=self.lpt_sql.listen_to_lpt_calibration, args=(lpt_calibration,), daemon=False)
-        self.lpt_calibration_thread.start()
 
     def add_tv_assembly_data(self, tv_assembly: str = "", tv_summary: str = "", status_file: str = "") -> None:
         """
@@ -370,25 +332,6 @@ class FMSDataStructure:
                 self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_path, cathode_path=cathode_path, operator = tester, tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
         else:
             self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_fr_path, cathode_path=cathode_fr_path, tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
-
-    def flow_restrictor_testing(self) -> None:
-        """
-        Show flow restrictor testing input field.
-        """
-        self.fr_sql.flow_test_inputs()
-
-    def listen_to_fms_main_results(self, data_folder: str = "") -> None:
-        """
-        Start listening for new FMS main results.
-        This method initializes a thread to monitor the FMS main results
-        directory for new or modified files.
-        Args:
-            data_folder (str): Path to the directory containing FMS main test results.
-        """
-        if not data_folder:
-            data_folder = os.path.join(self.absolute_data_dir, "FMS_data")
-        self.fms_main_results_thread = threading.Thread(target=self.fms_sql.listen_to_fms_main_results, args=(data_folder,), daemon=False)
-        self.fms_main_results_thread.start()
 
     def get_all_certifications(self, local_certifications: str = "") -> None:
         """

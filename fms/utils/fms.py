@@ -2176,13 +2176,37 @@ class FMSLogicSQL(FMSData, FMSListener):
             print("Attempting to restart functional tests listener...")
             self.listen_to_functional_tests(data_folder=data_folder)
 
-    def update_flow_test_results(self) -> None:
+    def update_flow_test_results(self, flow_test_file: str = "", test_type: str = "") -> None:
         """
-        Updates flow test results in the database with the FMS data class instance.
-        This can be done automatically from the test reports or directly using input from the FMSTesting
-        class procedure. If fms_data is not provided, it uses the attributes obtained in the listening event.
+        Updates flow test results in the database.
+        
+        This method processes flow test data and updates the corresponding database entries.
+        If no file is provided, it uses the attributes from the listening event.
+        
+        Args:
+            flow_test_file (str, optional): Path to the flow test file to process. 
+                If empty, uses the current file attributes. Defaults to "".
+            test_type (str, optional): Type of flow test to process. 
+                Valid values: "slope", "open_loop", "closed_loop".
+                If empty, attempts to infer from filename. Defaults to "".
+        
+        Raises:
+            ValueError: If test_type cannot be inferred from filename and is not provided.
+            Exception: If database update fails or file parsing errors occur.
         """
         session = None
+        if not hasattr(self, "functional_test_results") or not self.functional_test_results:
+            if flow_test_file:
+                possible_tests = ["slope", "open_loop", "closed_loop"]
+                test_type = next((i for i in possible_tests if i in os.path.basename(flow_test_file)), test_type)
+                if not bool(test_type):
+                    print("The test type cannot be inferred from the filename, please give the test type as input: ['slope', 'open_loop', 'closed_loop']")
+                    return
+                self.test_type = test_type
+                self.extract_flow_data()
+            else:
+                print("Either provide the flow test file and optionally the test type or use the 'listen_to_functional_tests' method to extract the flow test results.")
+                return
         try:
             session = self._get_session()
 
@@ -2444,16 +2468,30 @@ class FMSLogicSQL(FMSData, FMSListener):
                 session.rollback()
             traceback.print_exc()
                     
-    def update_fr_characteristics_results(self, fms_data: FMSData = None) -> None:
+    def update_fr_characteristics_results(self, flow_test_file: str = "") -> None:
         """
-        Updates the test results from the FR characterization in the database.
-        This can be done automatically from the test reports or directly using input from the FMSTesting
-        class procedure. If fms_data is not provided, it uses the attributes obtained in the
-        listening event.
+        Updates the FR characterization test results in the database.
+        
+        Processes FR characteristics flow test data and updates the corresponding database entries.
+        If no file is provided, it uses the attributes from the listening event.
+        
         Args:
-            fms_data (FMS_data): FMS data class instance containing FR characterization test results.
+            flow_test_file (str, optional): Path to the FR characteristics test file to process. 
+                If empty, uses the current file attributes. Defaults to "".
+        
+        Raises:
+            ValueError: If file parsing errors occur.
+            Exception: If database update fails.
         """
         session = None
+        if not hasattr(self, "functional_test_results") or not self.functional_test_results:
+            if flow_test_file:
+                self.flow_test_file = flow_test_file
+                self.test_type = "fr_characteristics"
+                self.extract_flow_data()
+            else:
+                print("Either provide the flow_test_file or use the 'listen_to_functional_tests' function to update the fr characteristics test results.")
+                return
         try:
             session = self._get_session()
             
@@ -2526,13 +2564,31 @@ class FMSLogicSQL(FMSData, FMSListener):
         
         return update_dict
 
-    def update_tvac_cycle_results(self) -> None:
+    def update_tvac_cycle_results(self, csv_files: list[str] = None) -> None:
         """
-        Updates TVAC cycle test results in the database with the FMS data class instance.
+        Updates the TVAC cycle test results in the database using the FMS data class instance.
+        This method checks if there are existing functional test results. If not, it attempts to 
+        extract TVAC data from the provided CSV files. If no CSV files are provided, it prompts 
+        the user to either supply the files or use the 'listen_to_functional_tests' function 
+        to update the results.
+
+        Parameters:
+            csv_files (list[str], optional): A list of file paths to the CSV files containing 
+            TVAC cycle test data. If not provided, the method will attempt to retrieve data 
+            from existing functional test results.
+        Raises:
+            Exception: If an error occurs during the update process, the error message will be 
+            printed, and the session will be rolled back if it was initiated.
         """
         session = None
         if not hasattr(self, "functional_test_results") or not bool(self.functional_test_results):
-            self.extract_tvac_from_csv()
+            if csv_files:
+                self.csv_files = csv_files
+                self.test_type = "tvac_cycle"
+                self.extract_tvac_from_csv()
+            else:
+                print("Either provide the tvac log files in the function or use the 'listen_to_functional_tests' function to update the tvac cycle test results.")
+                return
         try:
             session = self._get_session()
             if self.functional_test_results and self.selected_fms_id:
@@ -2590,149 +2646,136 @@ class FMSLogicSQL(FMSData, FMSListener):
 
     def allocate_components(self, session: "Session", fms_entry: FMSMain, component_dict: dict) -> None:
         """
-        Allocates components to the FMS entry in the database, using the current FMS ID.
-        Args:
-            session (Session): SQLAlchemy session for database operations.
-            fms_entry (FMSMain): FMSMain entry to allocate components and their databases to.
-            component_dict (dict): Dictionary containing component serial numbers.
+        Allocates components to the specified FMS entry in the database.
+        This method retrieves the necessary component IDs from the provided 
+        component dictionary and calculates the air conditioning ratios. It 
+        then allocates the high-pressure inlet valve (HPIV), television (TV), 
+        and manifold to the FMS entry. In case of an error during the allocation 
+        process, the session is rolled back to maintain database integrity.
+
+        Parameters:
+            session (Session): The database session used for the allocation.
+            fms_entry (FMSMain): The FMS entry to which components are being allocated.
+            component_dict (dict): A dictionary containing component IDs and other 
+                                   relevant data for allocation.
+        Raises:
+            Exception: If an error occurs during the allocation process, it will 
+                       print the error message and traceback, and rollback the session.
         """
         try:
-            hpiv_id = component_dict.get('hpiv_id')
-            tv_id = component_dict.get('tv_id')
-            lpt_id = component_dict.get('lpt_id')
-            anode_fr_id = component_dict.get('anode_fr_id')
-            cathode_fr_id = component_dict.get('cathode_fr_id')
             fms_id = component_dict.get('fms_id')
+            calculated_ac_ratio, specified_ac_ratio = self._calculate_ac_ratios(session, component_dict)
+
+            self._allocate_hpiv(session, component_dict.get('hpiv_id'), fms_id)
+            self._allocate_tv(session, component_dict.get('tv_id'), fms_id)
+
             manifold_id = component_dict.get('manifold_id', None)
-            calculated_ac_ratio = self.calculate_ac_ratio(session, anode_fr_id, cathode_fr_id)
-            if calculated_ac_ratio:
-                specified_ac_ratio = round(calculated_ac_ratio)
-            else:
-                specified_ac_ratio = None
-
-            hpiv = session.query(HPIVCertification).filter_by(hpiv_id=hpiv_id).first()
-            if hpiv:
-                if hpiv.allocated != fms_id:
-                    hpiv.allocated = fms_id
-            
-            tv = session.query(TVStatus).filter_by(tv_id=tv_id).first()
-            if tv and not tv_id == str(15):
-                if not tv.allocated:
-                    tv.allocated = fms_id
-                elif tv.allocated != fms_id:
-                    tv.allocated = fms_id
-                print(tv_id)
-
-            manifold = None
-            lookup_chain = [
-                (ManifoldStatus.lpt, ManifoldStatus.lpt.any(lpt_id=lpt_id)),
-                (ManifoldStatus.anode, ManifoldStatus.anode.any(
-                    or_(
-                        AnodeFR.allocated.contains(fms_id),
-                        AnodeFR.fr_id == anode_fr_id
-                    )
-                )),
-                (ManifoldStatus.cathode, ManifoldStatus.cathode.any(
-                    or_(
-                        CathodeFR.allocated.contains(fms_id),
-                        CathodeFR.fr_id == cathode_fr_id
-                    )
-                )),
-            ]
-
-            if not manifold_id:
-                manifold = session.query(ManifoldStatus).filter_by(allocated=fms_id).first()
-                if manifold:
-                    fms_entry.manifold_id = manifold.set_id
-                    anode_check: list[AnodeFR] = manifold.anode
-                    if anode_check:
-                        anode_check = anode_check[0]
-                        anode_id = anode_check.fr_id
-                        if anode_id != anode_fr_id:
-                            fms_entry.anode_fr_id = anode_id
-                    else:
-                        anode = session.query(AnodeFR).filter(AnodeFR.allocated.contains(fms_id)).first()
-                        if anode and anode.set_id != manifold.set_id:
-                            anode.set_id = manifold.set_id
-                            manifold.ac_ratio = calculated_ac_ratio
-                            manifold.ac_ratio_specified = specified_ac_ratio
-                    cathode_check: list[CathodeFR] = manifold.cathode
-                    if cathode_check:
-                        cathode_check = cathode_check[0]
-                        cathode_id = cathode_check.fr_id
-                        if cathode_id != cathode_fr_id:
-                            fms_entry.cathode_fr_id = cathode_id
-                    else:
-                        cathode = session.query(CathodeFR).filter(CathodeFR.allocated.contains(fms_id)).first()
-                        if cathode and cathode.set_id != manifold.set_id:
-                            cathode.set_id = manifold.set_id
-                            manifold.ac_ratio = calculated_ac_ratio
-                            manifold.ac_ratio_specified = specified_ac_ratio
-                    lpt_check: list[LPTCalibration] = manifold.lpt
-                    if lpt_check:
-                        lpt_check = lpt_check[0]
-                        lpt_id_check = lpt_check.lpt_id
-                        if lpt_id_check != lpt_id:
-                            fms_entry.lpt_id = lpt_id_check
-                    else:
-                        lpt = session.query(LPTCalibration).filter_by(lpt_id=lpt_id).first()
-                        if lpt and lpt.set_id != manifold.set_id:
-                            lpt.set_id = manifold.set_id
-                else:
-                    for rel, condition in lookup_chain:
-                        manifold = session.query(ManifoldStatus).join(rel).filter(condition).first()
-                        # print(f"set_id found: {manifold.set_id}")
-                        if manifold:
-                            if manifold.allocated != fms_id:
-                                manifold.allocated = fms_id
-                                manifold.ac_ratio = calculated_ac_ratio
-                                manifold.ac_ratio_specified = specified_ac_ratio
-                            fms_entry.manifold_id = manifold.set_id
-                            anode_check = manifold.anode
-                            if anode_check:
-                                anode_check = anode_check[0]
-                                anode_id = anode_check.fr_id
-                                if anode_id != anode_fr_id:
-                                    fms_entry.anode_fr_id = anode_id
-                            else:
-                                anode = session.query(AnodeFR).filter(AnodeFR.allocated.contains(fms_id)).first()
-                                if anode and anode.set_id != manifold.set_id:
-                                    anode.set_id = manifold.set_id
-                                    manifold.ac_ratio = calculated_ac_ratio
-                                    manifold.ac_ratio_specified = specified_ac_ratio
-                            cathode_check = manifold.cathode
-                            if cathode_check:
-                                cathode_check = cathode_check[0]
-                                cathode_id = cathode_check.fr_id
-                                if cathode_id != cathode_fr_id:
-                                    fms_entry.cathode_fr_id = cathode_id
-                            else:
-                                cathode = session.query(CathodeFR).filter(CathodeFR.allocated.contains(fms_id)).first()
-                                if cathode and cathode.set_id != manifold.set_id:
-                                    cathode.set_id = manifold.set_id
-                                    manifold.ac_ratio = calculated_ac_ratio
-                                    manifold.ac_ratio_specified = specified_ac_ratio
-                            lpt_check = manifold.lpt
-                            if lpt_check:
-                                lpt_check = lpt_check[0]
-                                lpt_id_check = lpt_check.lpt_id
-                                if lpt_id_check != lpt_id:
-                                    fms_entry.lpt_id = lpt_id_check
-                            else:
-                                lpt = session.query(LPTCalibration).filter_by(lpt_id=lpt_id).first()
-                                if lpt and lpt.set_id != manifold.set_id:
-                                    lpt.set_id = manifold.set_id
-                            break
-            else:
-                manifold = session.query(ManifoldStatus).filter_by(set_id=manifold_id).first()
-                if manifold and manifold.allocated != fms_id:
-                    manifold.allocated = fms_id
+            self._allocate_manifold(
+                session, fms_entry, component_dict, fms_id,
+                calculated_ac_ratio, specified_ac_ratio, manifold_id
+            )
 
         except Exception as e:
             print(f"Error allocating components: {str(e)}")
             if session:
                 session.rollback()
             traceback.print_exc()
+
+    def _calculate_ac_ratios(self, session: "Session", component_dict: dict):
+        anode_fr_id = component_dict.get('anode_fr_id')
+        cathode_fr_id = component_dict.get('cathode_fr_id')
+        calculated_ac_ratio = self.calculate_ac_ratio(session, anode_fr_id, cathode_fr_id)
+        specified_ac_ratio = round(calculated_ac_ratio) if calculated_ac_ratio else None
+        return calculated_ac_ratio, specified_ac_ratio
+
+
+    def _allocate_hpiv(self, session, hpiv_id, fms_id):
+        hpiv = session.query(HPIVCertification).filter_by(hpiv_id=hpiv_id).first()
+        if hpiv and hpiv.allocated != fms_id:
+            hpiv.allocated = fms_id
+
+
+    def _allocate_tv(self, session, tv_id, fms_id):
+        tv = session.query(TVStatus).filter_by(tv_id=tv_id).first()
+        if tv and tv_id != str(15):
+            tv.allocated = fms_id
+
+
+    def _allocate_manifold(self, session, fms_entry, component_dict, fms_id, calculated_ac_ratio, specified_ac_ratio, manifold_id):
+        lpt_id = component_dict.get('lpt_id')
+        anode_fr_id = component_dict.get('anode_fr_id')
+        cathode_fr_id = component_dict.get('cathode_fr_id')
+
+        if manifold_id:
+            manifold = session.query(ManifoldStatus).filter_by(set_id=manifold_id).first()
+            if manifold and manifold.allocated != fms_id:
+                manifold.allocated = fms_id
+            return
+
+        manifold = session.query(ManifoldStatus).filter_by(allocated=fms_id).first()
+        if manifold:
+            self._update_manifold_entries(session, fms_entry, manifold, fms_id, lpt_id, anode_fr_id, cathode_fr_id, calculated_ac_ratio, specified_ac_ratio)
+        else:
+            lookup_chain = [
+                (ManifoldStatus.lpt, ManifoldStatus.lpt.any(lpt_id=lpt_id)),
+                (ManifoldStatus.anode, ManifoldStatus.anode.any(
+                    or_(AnodeFR.allocated.contains(fms_id), AnodeFR.fr_id == anode_fr_id)
+                )),
+                (ManifoldStatus.cathode, ManifoldStatus.cathode.any(
+                    or_(CathodeFR.allocated.contains(fms_id), CathodeFR.fr_id == cathode_fr_id)
+                )),
+            ]
+            for rel, condition in lookup_chain:
+                manifold = session.query(ManifoldStatus).join(rel).filter(condition).first()
+                if manifold:
+                    if manifold.allocated != fms_id:
+                        manifold.allocated = fms_id
+                        manifold.ac_ratio = calculated_ac_ratio
+                        manifold.ac_ratio_specified = specified_ac_ratio
+                    self._update_manifold_entries(session, fms_entry, manifold, fms_id, lpt_id, anode_fr_id, cathode_fr_id, calculated_ac_ratio, specified_ac_ratio)
+                    break
+
+
+    def _update_manifold_entries(self, session, fms_entry, manifold, fms_id, lpt_id, anode_fr_id, cathode_fr_id, calculated_ac_ratio, specified_ac_ratio):
+        # Update FMS entry from manifold
+        fms_entry.manifold_id = manifold.set_id
+
+        # Anode
+        anode_check = manifold.anode
+        if anode_check:
+            anode_id = anode_check[0].fr_id
+            if anode_id != anode_fr_id:
+                fms_entry.anode_fr_id = anode_id
+        else:
+            anode = session.query(AnodeFR).filter(AnodeFR.allocated.contains(fms_id)).first()
+            if anode and anode.set_id != manifold.set_id:
+                anode.set_id = manifold.set_id
+                manifold.ac_ratio = calculated_ac_ratio
+                manifold.ac_ratio_specified = specified_ac_ratio
+
+        # Cathode
+        cathode_check = manifold.cathode
+        if cathode_check:
+            cathode_id = cathode_check[0].fr_id
+            if cathode_id != cathode_fr_id:
+                fms_entry.cathode_fr_id = cathode_id
+        else:
+            cathode = session.query(CathodeFR).filter(CathodeFR.allocated.contains(fms_id)).first()
+            if cathode and cathode.set_id != manifold.set_id:
+                cathode.set_id = manifold.set_id
+                manifold.ac_ratio = calculated_ac_ratio
+                manifold.ac_ratio_specified = specified_ac_ratio
+
+        # LPT
+        lpt_check = manifold.lpt
+        if lpt_check:
+            lpt_id_check = lpt_check[0].lpt_id
+            if lpt_id_check != lpt_id:
+                fms_entry.lpt_id = lpt_id_check
+        else:
+            lpt = session.query(LPTCalibration).filter_by(lpt_id=lpt_id).first()
+            if lpt and lpt.set_id != manifold.set_id:
+                lpt.set_id = manifold.set_id
 
     def convert_FR_id(self, session: "Session", type: str, fr_id: str, available_anodes: list[str] = [], available_cathodes: list[str] = [], fms_id: str = None) -> str:
         """
