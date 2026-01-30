@@ -1304,21 +1304,21 @@ class FMSData:
         plt.tight_layout()
         plt.show()
 
-    def get_flow_power_slope(self, flows: np.ndarray, powers: np.ndarray, num_points: int = 300) -> dict:
+    def get_flow_power_slope(self, flows: list[float], powers: list[float], num_points: int = 3000) -> dict:
         """
-        Calculate the flow vs power slope in specified regions (1-2 mg/s and 2-4 mg/s).
+        Calculate the flow-power slope for specified ranges of flow rates.
         Args:
-            flows (np.ndarray): Array of flow values.
-            powers (np.ndarray): Array of power values.
+            flows (list[float]): List of flow rate values.
+            powers (list[float]): List of power values.
             num_points (int): Number of points for smoothing.
         Returns:
-            dict: Dictionary containing smoothed power and flow arrays, slopes, and intercepts for both regions.
+            dict: A dictionary containing smoothed power and flow values, slopes, and intercepts for 1-2 mg/s and 2-4 mg/s ranges.
         """
         mask = powers > 0.2
         flows = flows[mask]
         powers = powers[mask]
 
-        def get_region(flow_vals, power_vals, lower_bound, upper_bound):
+        def get_region(flow_vals: np.ndarray, power_vals: np.ndarray, lower_bound: float, upper_bound: float) -> tuple[np.ndarray, np.ndarray]:
             below_idx = np.where(flow_vals < lower_bound)[0]
             above_idx = np.where(flow_vals > upper_bound)[0]
 
@@ -1332,7 +1332,12 @@ class FMSData:
             else:
                 end_idx = above_idx[0]
 
-            return power_vals[start_idx:end_idx + 1], flow_vals[start_idx:end_idx + 1]
+            power_segment = power_vals[start_idx:end_idx + 1]
+            flow_segment = flow_vals[start_idx:end_idx + 1]
+            
+            flow_segment = np.clip(flow_segment, lower_bound, upper_bound)
+            
+            return power_segment, flow_segment
 
         def smooth_and_slope(power_segment: np.ndarray, flow_segment: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
             if len(power_segment) < 2 or len(flow_segment) < 2:
