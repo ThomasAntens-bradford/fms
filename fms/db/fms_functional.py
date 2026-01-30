@@ -32,6 +32,10 @@ class FMSFunctionalTests(Base):
         Outlet pressure of the FMS during the test, in bar.
     gas_type : String
         Type of gas used during the test.
+    slope12 : float, optional
+        Calculated slope coefficient for the TV flow characteristic between 1-2 mg/s.
+    slope24 : float, optional
+        Calculated slope coefficient for the TV flow characteristic between 2-4 mg/s.
     slope12 : Float
         Slope of the TV flow between 1 and 2 mg/s flow rate.
     slope24 : Float
@@ -69,6 +73,8 @@ class FMSFunctionalTests(Base):
     inlet_pressure = Column(Float, nullable=True)
     outlet_pressure = Column(Float, nullable=True)
     gas_type = Column(String(50), nullable=True)
+    flow12 = Column(JSON, nullable=True)
+    flow24 = Column(JSON, nullable=True)
     slope12 = Column(Float, nullable=True)
     slope24 = Column(Float, nullable=True)
     intercept12 = Column(Float, nullable=True)

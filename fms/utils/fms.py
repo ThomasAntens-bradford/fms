@@ -11,8 +11,6 @@ from enum import Enum
 # Third-party imports
 import fitz
 import ipywidgets as widgets
-import matplotlib.pyplot as plt
-from matplotlib.ticker import FormatStrFormatter
 import numpy as np
 import openpyxl
 import pandas as pd
@@ -570,20 +568,6 @@ class FMSData:
         self.functional_test_results = self.tvac_df.to_dict(orient='records')
         # print(self.tvac_df.head())
 
-    def plot_tvac_cycle(self, serial: str = '25-050') -> None:
-        """
-        Plot TVAC cycle data from the extracted DataFrame.
-        """
-        plt.plot(self.tvac_df[FMSTvacParameters.TIME.value], self.tvac_df[FMSTvacParameters.TRP1.value], label='TRP1', color='blue')
-        plt.plot(self.tvac_df[FMSTvacParameters.TIME.value], self.tvac_df[FMSTvacParameters.TRP2.value], label='TRP2', color='orange')
-
-        plt.xlabel('Time [hrs]')
-        plt.ylabel('Temperature [degC]')
-        plt.title(f'TVAC Acceptance Cycles LP FMS, SN: {serial}, Pvac < 1E-1 mbar, MLI')
-        plt.legend()
-        plt.grid()
-        plt.show()
-
     def preprocess_flow_dataframe(self, trial: int, df: pd.DataFrame) -> pd.DataFrame:
         """
         Preprocess the flow test DataFrame by cleaning column names and filtering to expected columns.
@@ -631,114 +615,341 @@ class FMSData:
         df = df[[col for col in df.columns if col in expected_columns]]
         return df
 
-    def extract_slope_data(self, separation: str = '\t', trial: int = 0) -> None:
+    def extract_flow_data(self, separation: str = '\t', trial: int = 0) -> None:
         """
         Extracts the relevant test data from FMS flow tests.
-            Creates a Pandas DataFrame from the raw xls file and processes the data,
-            converts the dataframe to functional_test_results attribute.
+        Creates a Pandas DataFrame from the raw xls file and processes the data,
+        converts the dataframe to functional_test_results attribute.
         Args:
             separation (str): Separator used in the CSV file.
             trial (int): Trial number for parsing attempts.
         """
-        df = pd.read_csv(self.flow_test_file, sep=separation, skiprows=1) if not separation == None else pd.read_csv(self.flow_test_file, sep = None, engine = 'python', skiprows=1)
+        # Load and preprocess raw data
+        df = self._load_csv_file(separation)
         self.test_id = os.path.basename(self.flow_test_file).split('_LP_')[0]
+        
+        # Preprocess and validate dataframe
+        df = self._preprocess_and_validate_dataframe(df, trial, separation)
+        if df is None:  # Retry with different separator
+            return
+        
+        # Extract column mapping and units
+        df = self._map_columns_and_extract_units(df)
+        
+        # Filter to required columns
+        df = self._filter_required_columns(df, trial, separation)
+        if df is None:  # Retry with different separator
+            return
+        
+        # Clean and prepare data
+        df = self._clean_and_prepare_data(df)
+        
+        # Trim data to valid test region
+        df = self._trim_to_valid_test_region(df)
+        
+        # Store functional test results
+        self.functional_test_results = df.to_dict(orient='records')
+        
+        # Extract test conditions
+        self._extract_test_conditions(df)
+        
+        # Store dataframe and process by test type
+        self.df = df
+        self._process_by_test_type(df)
+
+
+    def _load_csv_file(self, separation: str) -> pd.DataFrame:
+        """Load CSV file with appropriate separator."""
+        if separation is None:
+            return pd.read_csv(self.flow_test_file, sep=None, engine='python', skiprows=1)
+        else:
+            return pd.read_csv(self.flow_test_file, sep=separation, skiprows=1)
+
+
+    def _preprocess_and_validate_dataframe(self, df: pd.DataFrame, trial: int, 
+                                        separation: str) -> pd.DataFrame:
+        """Preprocess dataframe with initial cleaning."""
         df = self.preprocess_flow_dataframe(trial, df)
         df.drop(df.index[0], inplace=True)
         df.ffill(inplace=True)
-        df.dropna(axis=1, how='all', inplace=True)  
-        # first_col_name = df.columns[0]
-        # second_col_name = df.columns[1]
-        # if any('unnamed' in i.lower() for i in df.columns):
-        #     df.drop(columns=[first_col_name], inplace=True)
-        #     df.rename(columns={second_col_name: first_col_name}, inplace=True)
+        df.dropna(axis=1, how='all', inplace=True)
+        return df
+
+
+    def _map_columns_and_extract_units(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Map column names to standard parameters and extract units."""
         param_map = {}
         self.units = {}
         df.columns = df.columns.str.strip().str.rstrip(',')
+        
         for idx, col in enumerate(list(df.columns)):
             match = re.search(r'(?P<param>.*?)\s*\[(?P<unit>[^\]]+)\]', col)
             if match:
                 unit = match.group('unit').strip()
                 self.units[self.test_parameter_names[idx]] = unit
                 param_map[col] = self.test_parameter_names[idx]
-
+        
         df.rename(columns=param_map, inplace=True)
-        fms = FMSFlowTestParameters
-        keep_cols = [fms.LOGTIME.value, fms.AVG_TV_POWER.value, fms.TOTAL_FLOW.value, fms.TV_CURRENT.value, fms.TV_VOLTAGE.value, fms.TV_POWER.value,
-                     fms.CLOSED_LOOP_PRESSURE.value, fms.TV_PT1000.value, fms.CATHODE_FLOW.value, fms.ANODE_FLOW.value, fms.INLET_PRESSURE.value, fms.PC3_SETPOINT.value,
-                     fms.CATHODE_PRESSURE.value, fms.ANODE_PRESSURE.value, fms.LPT_PRESSURE.value, fms.LPT_VOLTAGE.value, fms.LPT_TEMP.value]
+        return df
 
+
+    def _filter_required_columns(self, df: pd.DataFrame, trial: int, 
+                                separation: str) -> pd.DataFrame | None:
+        """Filter dataframe to only required columns, retry with different separator if needed."""
+        fms = FMSFlowTestParameters
+        keep_cols = [
+            fms.LOGTIME.value, fms.AVG_TV_POWER.value, fms.TOTAL_FLOW.value, 
+            fms.TV_CURRENT.value, fms.TV_VOLTAGE.value, fms.TV_POWER.value,
+            fms.CLOSED_LOOP_PRESSURE.value, fms.TV_PT1000.value, 
+            fms.CATHODE_FLOW.value, fms.ANODE_FLOW.value, fms.INLET_PRESSURE.value, 
+            fms.PC3_SETPOINT.value, fms.CATHODE_PRESSURE.value, fms.ANODE_PRESSURE.value, 
+            fms.LPT_PRESSURE.value, fms.LPT_VOLTAGE.value, fms.LPT_TEMP.value
+        ]
+        
         if all(col in df.columns for col in keep_cols):
-            df = df[keep_cols]
+            return df[keep_cols]
         else:
             print("Not all columns found, trying another separator.")
             trials = [None, ',']
             trial = trial + 1
             if trial >= len(trials):
                 raise ValueError("Could not parse the flow test file with expected columns.")
-            separation = trials[trial-1]
-            self.extract_slope_data(separation=separation, trial=trial+1)
-            return
+            separation = trials[trial - 1]
+            self.extract_flow_data(separation=separation, trial=trial + 1)
+            return None
 
+
+    def _clean_and_prepare_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Convert numeric columns and prepare data types."""
+        fms = FMSFlowTestParameters
+        
         for col in df.columns:
-            if col != FMSFlowTestParameters.LOGTIME.value:
+            if col != fms.LOGTIME.value:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        return df
 
+
+    def _trim_to_valid_test_region(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Trim dataframe to valid test region based on closed loop pressure."""
+        fms = FMSFlowTestParameters
         clp = df[fms.CLOSED_LOOP_PRESSURE.value].to_numpy()
-
+        
         window = 90
         valid_start_indices = np.where(
             np.convolve((clp >= 1).astype(int), np.ones(window, dtype=int), mode="valid") == window
         )[0]
-
+        
         if len(valid_start_indices) > 0:
             start_idx = max(valid_start_indices[0] - 40, 0)
             df = df.iloc[start_idx:].reset_index(drop=True)
-
-        df[fms.LOGTIME.value] = df[fms.LOGTIME.value] - df[fms.LOGTIME.value].iloc[0]
-
-        self.functional_test_results = df.to_dict(orient='records')
         
+        # Reset logtime to start from zero
+        df[fms.LOGTIME.value] = df[fms.LOGTIME.value] - df[fms.LOGTIME.value].iloc[0]
+        
+        return df
+
+    def _extract_test_conditions(self, df: pd.DataFrame) -> None:
+        """Extract test conditions: pressures, temperature, and adjust test type."""
+        fms = FMSFlowTestParameters
+        
+        # Extract pressures
         self.outlet_pressure = float(df[fms.PC3_SETPOINT.value].iloc[0]) * 1000
         mean_inlet_pressure = df[fms.INLET_PRESSURE.value].mean()
         self.inlet_pressure = round(mean_inlet_pressure / 10) * 10
         self.inlet_pressure = 10 if self.inlet_pressure < 100 else 190
-        self.temperature = df[fms.LPT_TEMP.value].mean()
+        
+        # Extract and classify temperature
+        raw_temperature = df[fms.LPT_TEMP.value].mean()
+        self._classify_temperature(raw_temperature)
+        
+        # Adjust test type based on inlet pressure
+        self._adjust_test_type_for_pressure()
 
+
+    def _classify_temperature(self, raw_temperature: float) -> None:
+        """Classify temperature into cold/room/hot categories."""
         temperature_check = [-15, 22, 70]
         temperature_types = [FunctionalTestType.COLD, FunctionalTestType.ROOM, FunctionalTestType.HOT]
+        
+        closest_idx = np.argmin([abs(raw_temperature - t) for t in temperature_check])
+        self.temperature = temperature_check[closest_idx]
+        self.temperature_type = temperature_types[closest_idx]
 
-        self.temperature = temperature_check[np.argmin([abs(self.temperature - t) for t in temperature_check])]
-        self.temperature_type = temperature_types[np.argmin([abs(self.temperature - t) for t in temperature_check])]
 
-        if self.inlet_pressure > 100 and not self.test_type == 'fr_characteristics':
+    def _adjust_test_type_for_pressure(self) -> None:
+        """Adjust test type name based on inlet pressure (high/low)."""
+        if self.test_type == 'fr_characteristics':
+            return
+        
+        if self.inlet_pressure > 100:
             self.test_type = 'high_' + self.test_type
-        elif self.inlet_pressure < 100 and not self.test_type == 'fr_characteristics':
+        elif self.inlet_pressure < 100:
             self.test_type = 'low_' + self.test_type
 
+
+    def _process_by_test_type(self, df: pd.DataFrame) -> None:
+        """Process data based on specific test type requirements."""
         if self.test_type.endswith('slope') or self.test_type.endswith("open_loop"):
-            self.tv_powers = [df[fms.AVG_TV_POWER.value].iloc[i] for i in range(len(df)-1) if df[fms.AVG_TV_POWER.value].iloc[i+1] > df[fms.AVG_TV_POWER.value].iloc[i]][50:]
-            self.tv_times = [df[fms.LOGTIME.value].iloc[i] for i in range(len(df)-1) if df[fms.AVG_TV_POWER.value].iloc[i+1] > df[fms.AVG_TV_POWER.value].iloc[i]][50:]
-            if 'slope' in self.test_type:
-                self.tv_slope = np.mean(np.diff(self.tv_powers)/ np.diff(self.tv_times))*60
-                flows = df[FMSFlowTestParameters.TOTAL_FLOW.value].to_numpy()
-                powers = df[FMSFlowTestParameters.AVG_TV_POWER.value].to_numpy()
-                self.flow_power_slope = self.get_flow_power_slope(flows, powers)
-                self.slope_correction = self.inlet_pressure / mean_inlet_pressure
+            self._process_slope_or_open_loop_test(df)
+        elif self.test_type == 'fr_characteristics':
+            self._process_fr_characteristics_test()
+        elif self.test_type.endswith("closed_loop"):
+            self._process_closed_loop_test(df)
         else:
             self.tv_slope = None
 
-        self.df = df
-        if self.test_type == 'fr_characteristics':
-            self.group_by_lpt_pressures()
-            self.functional_test_results = self.df.to_dict(orient='records')
-        elif self.test_type.endswith("closed_loop"):
-            self.response_times, self.response_regions = self.get_response_times(df = self.df)
+
+    def _process_slope_or_open_loop_test(self, df: pd.DataFrame) -> None:
+        """Process slope or open loop test data."""
+        
+        # Extract TV power increase points
+        self._extract_tv_power_data(df)
+        
+        # Calculate slope if this is a slope test
+        if 'slope' in self.test_type:
+            self._calculate_slopes(df)
+        else:
+            self.tv_slope = None
+
+
+    def _extract_tv_power_data(self, df: pd.DataFrame) -> None:
+        """Extract TV power and time data where power is increasing."""
+        fms = FMSFlowTestParameters
+        
+        increasing_indices = [
+            i for i in range(len(df) - 1) 
+            if df[fms.AVG_TV_POWER.value].iloc[i + 1] > df[fms.AVG_TV_POWER.value].iloc[i]
+        ][50:]
+        
+        self.tv_powers = [df[fms.AVG_TV_POWER.value].iloc[i] for i in increasing_indices]
+        self.tv_times = [df[fms.LOGTIME.value].iloc[i] for i in increasing_indices]
+
+
+    def _calculate_slopes(self, df: pd.DataFrame) -> None:
+        """Calculate TV slope and flow-power slope."""
+        fms = FMSFlowTestParameters
+        
+        # Calculate TV slope (power vs time)
+        self.tv_slope = np.mean(np.diff(self.tv_powers) / np.diff(self.tv_times)) * 60
+        
+        # Calculate flow-power slope
+        flows = df[fms.TOTAL_FLOW.value].to_numpy()
+        powers = df[fms.AVG_TV_POWER.value].to_numpy()
+        self.flow_power_slope = self.get_flow_power_slope(flows, powers)
+        
+        # Calculate slope correction factor
+        mean_inlet_pressure = df[fms.INLET_PRESSURE.value].mean()
+        self.slope_correction = self.inlet_pressure / mean_inlet_pressure
+
+
+    def _process_fr_characteristics_test(self) -> None:
+        """Process flow rate characteristics test data."""
+        self.group_by_lpt_pressures()
+        self.functional_test_results = self.df.to_dict(orient='records')
+
+
+    def _process_closed_loop_test(self, df: pd.DataFrame) -> None:
+        """Process closed loop test data."""
+        self.response_times, self.response_regions = self.get_response_times(df=df)
+
+    def get_flow_power_slope(self, flows: list[float], powers: list[float], num_points: int = 3000) -> dict:
+        """
+        Calculate the flow-power slope for specified ranges of flow rates.
+        Args:
+            flows (list[float]): List of flow rate values.
+            powers (list[float]): List of power values.
+            num_points (int): Number of points for smoothing.
+        Returns:
+            dict: A dictionary containing smoothed power and flow values, slopes, and intercepts for 1-2 mg/s and 2-4 mg/s ranges.
+        """
+        mask = powers > 0.2
+        flows = flows[mask]
+        powers = powers[mask]
+
+        def get_region(flow_vals: np.ndarray, power_vals: np.ndarray, lower_bound: float, upper_bound: float) -> tuple[np.ndarray, np.ndarray]:
+            below_idx = np.where(flow_vals < lower_bound)[0]
+            above_idx = np.where(flow_vals > upper_bound)[0]
+
+            if len(below_idx) == 0:
+                start_idx = 0
+            else:
+                start_idx = below_idx[-1]
+
+            if len(above_idx) == 0:
+                end_idx = len(flow_vals) - 1
+            else:
+                end_idx = above_idx[0]
+
+            power_segment = power_vals[start_idx:end_idx + 1]
+            flow_segment = flow_vals[start_idx:end_idx + 1]
+            
+            flow_segment = np.clip(flow_segment, lower_bound, upper_bound)
+            
+            return power_segment, flow_segment
+
+        def smooth_and_slope(power_segment: np.ndarray, flow_segment: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
+            if len(power_segment) < 2 or len(flow_segment) < 2:
+                return np.array([]), np.array([]), 0, 0
+
+            interp_func = interp1d(power_segment, flow_segment, kind='linear', fill_value="extrapolate")
+            power_smooth = np.linspace(power_segment.min(), power_segment.max(), num_points)
+            flow_smooth = interp_func(power_smooth)
+
+            model = LinearRegression()
+            model.fit(power_smooth.reshape(-1, 1), flow_smooth)
+            slope = model.coef_[0]
+            intercept = model.intercept_
+
+            return power_smooth, flow_smooth, slope, intercept
+
+        # 1–2 mg/s
+        tv_power_12, total_flows_12 = get_region(flows, powers, 1, 2)
+        tv_power_12_smooth, total_flows_12_smooth, slope12, intercept12 = smooth_and_slope(tv_power_12, total_flows_12)
+
+        # 2–4 mg/s
+        tv_power_24, total_flows_24 = get_region(flows, powers, 2, 4)
+        tv_power_24_smooth, total_flows_24_smooth, slope24, intercept24 = smooth_and_slope(tv_power_24, total_flows_24)
+
+        array_dict = {
+            'tv_power_12': tv_power_12_smooth,
+            'total_flows_12': total_flows_12_smooth,
+            'slope12': slope12,
+            'intercept12': intercept12,
+            'tv_power_24': tv_power_24_smooth,
+            'total_flows_24': total_flows_24_smooth,
+            'slope24': slope24,
+            'intercept24': intercept24
+        }
+
+        return array_dict
 
     def get_response_times(self, df: pd.DataFrame) -> dict[str, list]:
+        """Main orchestrator function."""
+        log_time, total_flow, lpt_pressure, tv_power, closed_loop_pressure = self._prepare_interpolated_data(df)
         
         response_times = {}
         response_regions = {}
+        
+        opening_times, tv_on_time = self._calculate_opening_response(log_time, total_flow, tv_power)
+        response_times["opening_time"] = opening_times
+        
+        # Find closed loop start points for each set point
+        cl_start_indices, cl_start_times = self._find_closed_loop_starts(
+            log_time, closed_loop_pressure, tv_on_time, opening_times
+        )
+        
+        # Calculate response times for each LPT set point
+        self._calculate_setpoint_responses(
+            log_time, lpt_pressure, cl_start_indices, cl_start_times,
+            response_times, response_regions
+        )
+        
+        return response_times, response_regions
 
+
+    def _prepare_interpolated_data(self, df: pd.DataFrame) -> tuple:
+        """Interpolate data to finer time resolution."""
         total_flow = df[FMSFlowTestParameters.TOTAL_FLOW.value].to_numpy()
         log_time = df[FMSFlowTestParameters.LOGTIME.value].to_numpy()
         lpt_pressure = df[FMSFlowTestParameters.LPT_PRESSURE.value].to_numpy()
@@ -751,8 +962,13 @@ class FMSData:
         lpt_pressure = np.interp(fine_time, log_time, lpt_pressure)
         tv_power = np.interp(fine_time, log_time, tv_power)
         closed_loop_pressure = np.interp(fine_time, log_time, closed_loop_pressure)
-        log_time = fine_time
+        
+        return fine_time, total_flow, lpt_pressure, tv_power, closed_loop_pressure
 
+
+    def _calculate_opening_response(self, log_time: np.ndarray, total_flow: np.ndarray, 
+                                    tv_power: np.ndarray) -> tuple[list, float]:
+        """Calculate opening time response (tau values)."""
         idx_tv_on = np.argmax(tv_power > 1e-5)
         time_tv_on = log_time[idx_tv_on]
 
@@ -764,70 +980,117 @@ class FMSData:
         flow_thresholds = flow_start + tau_percentages * delta_flow
         tau_indices = np.searchsorted(total_flow, flow_thresholds, side="left")
         tau_times = log_time[tau_indices] - time_tv_on
-        response_times["opening_time"] = list(tau_times)
+        
+        return list(tau_times), time_tv_on
 
+
+    def _find_closed_loop_starts(self, log_time: np.ndarray, closed_loop_pressure: np.ndarray,
+                                tv_on_time: float, opening_times: list) -> tuple[list, list]:
+        """Find the start indices and times for each closed loop set point."""
         tolerance = 0.005
-
+        max_look_window = 50000
+        tau_percentages = np.array([0.632, 0.865, 0.95])
+        
         cl_start_indices = []
         cl_start_times = []
-        max_look_window = 50000
+        
         for set_idx, set_point in enumerate(self.lpt_set_points):
             if set_idx == 0:
-                cl_start_indices.append(np.argmin(np.abs(log_time - tau_times[-1]/tau_percentages[-1])))
-                cl_start_times.append(tau_times[-1]/tau_percentages[-1])
+                # First set point starts after opening response
+                start_idx = np.argmin(np.abs(log_time - opening_times[-1]/tau_percentages[-1]))
+                cl_start_indices.append(start_idx)
+                cl_start_times.append(opening_times[-1]/tau_percentages[-1])
             else:
-                cl_pressures = closed_loop_pressure[cl_start_indices[set_idx-1]:cl_start_indices[set_idx-1]+max_look_window]
-                filtered_log_time = log_time[cl_start_indices[set_idx-1]:cl_start_indices[set_idx-1]+max_look_window]
+                # Subsequent set points start when previous set point is reached
+                search_start = cl_start_indices[set_idx-1]
+                search_end = search_start + max_look_window
+                
+                cl_pressures = closed_loop_pressure[search_start:search_end]
+                filtered_log_time = log_time[search_start:search_end]
+                
                 mask = (cl_pressures >= set_point - tolerance) & (cl_pressures <= set_point + tolerance)
                 times = filtered_log_time[mask]
+                
                 if len(times) > 0:
                     start_index = np.argmin(np.abs(log_time - times[0]))
                     cl_start_indices.append(start_index)
                     cl_start_times.append(log_time[start_index])
+        
+        return cl_start_indices, cl_start_times
 
+
+    def _calculate_setpoint_responses(self, log_time: np.ndarray, lpt_pressure: np.ndarray,
+                                    cl_start_indices: list, cl_start_times: list,
+                                    response_times: dict, response_regions: dict) -> None:
+        """Calculate response times for each LPT set point transition."""
+        tolerance = 0.005
+        max_look_window = 50000
+        tau_percentages = np.array([0.632, 0.865, 0.95])
+        
         for set_idx, set_point in enumerate(self.lpt_set_points):
-            tau_list = []
             try:
                 cl_start_time = cl_start_times[set_idx]
                 cl_start_idx = cl_start_indices[set_idx]
-            except:
+            except IndexError:
                 continue
+            
+            # Determine end of analysis window
             if len(cl_start_indices) == len(self.lpt_set_points):
                 cl_end_idx = cl_start_indices[set_idx + 1] if set_idx < len(self.lpt_set_points) - 1 else len(log_time) - 1
             else:
-                cl_end_idx = cl_start_idx + max_look_window if (cl_start_idx + max_look_window) < len(log_time) else len(log_time) - 1
-            cl_end_time = log_time[cl_end_idx] if set_idx < len(self.lpt_set_points) - 1 else log_time[-1]
-
-            segment = lpt_pressure[cl_start_idx:cl_end_idx + 1]
-            difference = np.abs(segment - set_point)
-
-            window = 2500
-            smoothed_difference = np.convolve(difference, np.ones(window)/window, mode='valid')
-
-            below_tol = np.where(smoothed_difference < tolerance)[0]
-
-            if len(below_tol) > 0:
-                lpt_idx = cl_start_idx + below_tol[0] + (window // 2)  
-            else:
-                lpt_idx = cl_end_idx  
-
-            lpt_start_time = log_time[lpt_idx]
-
-            if set_idx == 0:
-                key = f"response_time_to_{set_point}_barA"
-            elif set_idx == len(self.lpt_set_points) - 1:
-                key = f"closing_time_to_{set_point}_barA"
-            else:
-                key = f"response_{self.lpt_set_points[set_idx-1]}_to_{set_point}_barA"
-
+                cl_end_idx = min(cl_start_idx + max_look_window, len(log_time) - 1)
+            
+            # Find when LPT pressure stabilizes at set point
+            lpt_start_time = self._find_stabilization_time(
+                lpt_pressure, log_time, cl_start_idx, cl_end_idx, set_point, tolerance
+            )
+            
+            # Generate appropriate key name
+            key = self._generate_response_key(set_idx, set_point)
+            
+            # Calculate tau values
             response_regions[key] = (cl_start_time, lpt_start_time)
-            for i, tau in enumerate(tau_percentages, start=1):
-                tau_list.append(tau * (lpt_start_time - cl_start_time))
-            tau_list.append(lpt_start_time - cl_start_time)
-
+            tau_list = self._calculate_tau_values(cl_start_time, lpt_start_time, tau_percentages)
             response_times[key] = tau_list
 
-        return response_times, response_regions
+
+    def _find_stabilization_time(self, lpt_pressure: np.ndarray, log_time: np.ndarray,
+                                start_idx: int, end_idx: int, set_point: float, 
+                                tolerance: float) -> float:
+        """Find when LPT pressure stabilizes within tolerance of set point."""
+        segment = lpt_pressure[start_idx:end_idx + 1]
+        difference = np.abs(segment - set_point)
+
+        window = 2500
+        smoothed_difference = np.convolve(difference, np.ones(window)/window, mode='valid')
+
+        below_tol = np.where(smoothed_difference < tolerance)[0]
+
+        if len(below_tol) > 0:
+            lpt_idx = start_idx + below_tol[0] + (window // 2)
+        else:
+            lpt_idx = end_idx
+
+        return log_time[lpt_idx]
+
+
+    def _generate_response_key(self, set_idx: int, set_point: float) -> str:
+        """Generate appropriate key name for response time."""
+        if set_idx == 0:
+            return f"response_time_to_{set_point}_barA"
+        elif set_idx == len(self.lpt_set_points) - 1:
+            return f"closing_time_to_{set_point}_barA"
+        else:
+            return f"response_{self.lpt_set_points[set_idx-1]}_to_{set_point}_barA"
+
+
+    def _calculate_tau_values(self, start_time: float, end_time: float, 
+                            tau_percentages: np.ndarray) -> list:
+        """Calculate tau time constants as percentages of total response time."""
+        total_time = end_time - start_time
+        tau_list = [tau * total_time for tau in tau_percentages]
+        tau_list.append(total_time)  # Add full response time
+        return tau_list
 
     def group_by_lpt_pressures(self) -> None:
         """
@@ -881,134 +1144,260 @@ class FMSData:
             self.max_flow_rates
         )
 
-
     def extract_FMS_test_results(self) -> None:
         """
         Extract FMS test results from the provided PDF file and status Excel file.
         Populates the component_serials dictionary and other relevant attributes.
         Instantiates the fms_main_test_results attribute with the extracted data.
         """
-        
         pdf_document = fitz.open(self.pdf_file)
-        page_number = 0
-        TVAC_count = 0
-        tvac_label = ['hot', 'cold', 'room']
-
-        while page_number < len(pdf_document):
+        tvac_state = {'count': 0, 'labels': ['hot', 'cold', 'room']}
+        
+        for page_number in range(len(pdf_document)):
             page = pdf_document[page_number]
             page_text = page.get_text()
-
+            
+            # Process different page types
             if page_number == 0:
-                local_text = page_text.lower().split('\n')
-                project_ref = None
-                for item in local_text:
-                    match = re.search(r'\b\d{5}\b', item)
-                    if match:
-                        project_ref = int(match.group())
-                        break
-                self.project_ref = project_ref
-                
-            if '3. test item definition' in page_text.lower():
-                lines = [line for line in page_text.strip().split('\n')]
-                for i in range(len(lines)):
-                    line = lines[i].strip().lower()
-                    next_line = lines[i + 1].strip().lower() if i + 1 < len(lines) else ""
-
-                    if line == 'serial number':
-                        self.gas_type = next_line.split(' ')[-1].replace('(', '').replace(')', '').strip()
-                        self.try_serial = next_line.split(' ')[0]
-                        break
-
-            if '6. test results' in page_text.lower() and 5 <= page_number <= 20:
-                lines = [line for line in page_text.strip().split('\n')]
-                self.parse_measurements(lines)
-                self.component_serials = self.parse_serials(lines)
-                if self.gas_type:
-                    self.component_serials['gas_type'] = self.gas_type.capitalize()
-
-                status_sheet = openpyxl.load_workbook(self.status_file)
-                status_sheet = status_sheet["20025.10.AF"]
-
-                for row in status_sheet.iter_rows(min_row=2, min_col = 1, max_col = 65, values_only=True):
-                    if all(cell == None for cell in row):
-                        break
-                    serial_number, model, review = row[:3]
-                    serial_number = serial_number[:6]
-                    if review:
-                        review = review[:2]
-                    
-                    delivered = row[62]
-                    shipment = row[61]
-                    rfs = row[64]
-                    scrap_check = row[63]
-                    if delivered and delivered.lower() == 'c':
-                        status = FMSProgressStatus.DELIVERED
-                    elif shipment and (shipment.lower() == 'c' or shipment.lower() == 'i') and not (delivered and delivered.lower() == 'c'):
-                        status = FMSProgressStatus.SHIPMENT
-                    else:
-                        status = None
-
-                    if scrap_check and str(scrap_check).lower() == 'scrap':
-                        status = FMSProgressStatus.SCRAPPED
-
-                    if serial_number == self.component_serials.get('fms_id', ''):
-                        self.component_serials['model'] = model 
-                        self.component_serials['status'] = status
-                        self.component_serials['rfs'] = rfs
-                        self.component_serials['drawing'] = f"20025.10.AF-{review}"
-
-            if 'bonding, isolation and capacitance' in page_text.lower() and page_number >=5:
-                lines = [line for line in page_text.strip().split('\n')]
-                next_page_text = pdf_document[page_number + 1].get_text() if page_number + 1 < len(pdf_document) else ""
-                if next_page_text:
-                    next_lines = [line for line in next_page_text.strip().split('\n')]
-                    lines.extend(next_lines)
-                    
-                    self.extract_electrical_results(lines)
-                    page_number += 1
-
-            if 'valve performance' in page_text.lower() and 5 <= page_number <= 20:
-                lines = [line for line in page_text.strip().split('\n')]
-                self.extract_hpiv_performance(lines)
-
-            if 'pressure proof pressure' in page_text.lower() and 5 <= page_number <= 25:
-                lines = [line for line in page_text.strip().split('\n')]
-                self.extract_leakage(lines, search_proof_pressure = True)
+                self._extract_project_reference(page_text)
+            
+            if self._is_test_item_definition_page(page_text):
+                self._extract_test_item_definition(page_text)
+            
+            if self._is_test_results_page(page_text, page_number):
+                self._extract_test_results_and_status(page_text)
+            
+            if self._is_electrical_results_page(page_text, page_number):
+                page_number = self._extract_electrical_results_with_next_page(
+                    pdf_document, page_number, page_text
+                )
+            
+            if self._is_valve_performance_page(page_text, page_number):
+                self.extract_hpiv_performance(page_text.strip().split('\n'))
+            
+            if self._is_pressure_proof_page(page_text, page_number):
+                self.extract_leakage(page_text.strip().split('\n'), search_proof_pressure=True)
                 page_number += 5
-
-            if 'tvac cycle' in page_text.lower() and not 'health check' in page_text.lower() and not 'functional performance' in page_text.lower() and 20 <= page_number <= 55:
-                if TVAC_count <= 2:
-                    lines = [line for line in page_text.strip().split('\n')]
-                    next_page_text = pdf_document[page_number + 1].get_text() if page_number + 1 < len(pdf_document) else ""
-                    if next_page_text:
-                        next_lines = [line for line in next_page_text.strip().split('\n')]
-                        lines.extend(next_lines)
-                        self.extract_leakage(lines, tvac_label[TVAC_count])
-                        self.extract_hpiv_performance(lines, tvac_label[TVAC_count])
-                        self.extract_electrical_results(lines, tvac_label[TVAC_count])
-
-                        TVAC_count += 1
-                        page_number += 2
-
-            if 'power budget' in page_text.lower() and page_number >= 40:
-                lines = [line for line in page_text.strip().split('\n')]
-                table_count = 0
-                for line in lines:
-                    if 'table' in line.lower() and 'power budget' in line.lower():
-                        table_count += 1
-                if not table_count == 3:
-                    while table_count < 3:
-                        next_page_text = pdf_document[page_number + 1].get_text() if page_number + 1 < len(pdf_document) else ""
-                        if next_page_text:
-                            next_lines = [line for line in next_page_text.strip().split('\n')]
-                            lines.extend(next_lines)
-                            table_count += 1
-                            page_number += 1
-                self.extract_power_budget(lines)
-
-            page_number += 1
+            
+            if self._is_tvac_cycle_page(page_text, page_number):
+                page_number = self._process_tvac_cycle(
+                    pdf_document, page_number, page_text, tvac_state
+                )
+            
+            if self._is_power_budget_page(page_text, page_number):
+                page_number = self._extract_power_budget_multipage(
+                    pdf_document, page_number, page_text
+                )
+        
+        # Finalize data
         if self.project_ref:
             self.component_serials["project"] = self.project_ref
+
+
+    def _extract_project_reference(self, page_text: str) -> None:
+        """Extract project reference from first page."""
+        local_text = page_text.lower().split('\n')
+        project_ref = None
+        
+        for item in local_text:
+            match = re.search(r'\b\d{5}\b', item)
+            if match:
+                project_ref = int(match.group())
+                break
+        
+        self.project_ref = project_ref
+
+
+    def _is_test_item_definition_page(self, page_text: str) -> bool:
+        """Check if page contains test item definition."""
+        return '3. test item definition' in page_text.lower()
+
+
+    def _extract_test_item_definition(self, page_text: str) -> None:
+        """Extract gas type and serial number from test item definition."""
+        lines = [line for line in page_text.strip().split('\n')]
+        
+        for i in range(len(lines)):
+            line = lines[i].strip().lower()
+            next_line = lines[i + 1].strip().lower() if i + 1 < len(lines) else ""
+            
+            if line == 'serial number':
+                self.gas_type = next_line.split(' ')[-1].replace('(', '').replace(')', '').strip()
+                self.try_serial = next_line.split(' ')[0]
+                break
+
+
+    def _is_test_results_page(self, page_text: str, page_number: int) -> bool:
+        """Check if page contains test results section."""
+        return '6. test results' in page_text.lower() and 5 <= page_number <= 20
+
+
+    def _extract_test_results_and_status(self, page_text: str) -> None:
+        """Extract measurements, serials, and status from test results page."""
+        lines = [line for line in page_text.strip().split('\n')]
+        
+        # Parse measurements and serials
+        self.parse_measurements(lines)
+        self.component_serials = self.parse_serials(lines)
+        
+        if self.gas_type:
+            self.component_serials['gas_type'] = self.gas_type.capitalize()
+        
+        # Extract status from Excel file
+        self._extract_status_from_excel()
+
+
+    def _extract_status_from_excel(self) -> None:
+        """Extract component status information from status Excel file."""
+        status_sheet = openpyxl.load_workbook(self.status_file)
+        status_sheet = status_sheet["20025.10.AF"]
+        
+        for row in status_sheet.iter_rows(min_row=2, min_col=1, max_col=65, values_only=True):
+            if all(cell is None for cell in row):
+                break
+            
+            serial_number = row[0][:6] if row[0] else None
+            model = row[1]
+            review = row[2][:2] if row[2] else None
+            
+            if serial_number != self.component_serials.get('fms_id', ''):
+                continue
+            
+            # Found matching serial, extract all status info
+            self._populate_component_status(row, model, review)
+            break
+
+
+    def _populate_component_status(self, row: tuple, model: str, review: str) -> None:
+        """Populate component serials with status information from Excel row."""
+        delivered = row[62]
+        shipment = row[61]
+        rfs = row[64]
+        scrap_check = row[63]
+        
+        # Determine status
+        status = self._determine_component_status(delivered, shipment, scrap_check)
+        
+        # Populate serials
+        self.component_serials['model'] = model
+        self.component_serials['status'] = status
+        self.component_serials['rfs'] = rfs
+        self.component_serials['drawing'] = f"20025.10.AF-{review}"
+
+
+    def _determine_component_status(self, delivered: str, shipment: str, 
+                                    scrap_check: str) -> FMSProgressStatus | None:
+        """Determine component status based on Excel indicators."""
+        if scrap_check and str(scrap_check).lower() == 'scrap':
+            return FMSProgressStatus.SCRAPPED
+        
+        if delivered and delivered.lower() == 'c':
+            return FMSProgressStatus.DELIVERED
+        
+        if shipment and shipment.lower() in ('c', 'i') and not (delivered and delivered.lower() == 'c'):
+            return FMSProgressStatus.SHIPMENT
+        
+        return None
+
+
+    def _is_electrical_results_page(self, page_text: str, page_number: int) -> bool:
+        """Check if page contains electrical results."""
+        return 'bonding, isolation and capacitance' in page_text.lower() and page_number >= 5
+
+
+    def _extract_electrical_results_with_next_page(self, pdf_document, page_number: int, 
+                                                page_text: str) -> int:
+        """Extract electrical results, combining current and next page if needed."""
+        lines = [line for line in page_text.strip().split('\n')]
+        
+        # Check if next page exists and append its content
+        if page_number + 1 < len(pdf_document):
+            next_page_text = pdf_document[page_number + 1].get_text()
+            if next_page_text:
+                next_lines = [line for line in next_page_text.strip().split('\n')]
+                lines.extend(next_lines)
+                page_number += 1
+        
+        self.extract_electrical_results(lines)
+        return page_number
+
+
+    def _is_valve_performance_page(self, page_text: str, page_number: int) -> bool:
+        """Check if page contains valve performance section."""
+        return 'valve performance' in page_text.lower() and 5 <= page_number <= 20
+
+
+    def _is_pressure_proof_page(self, page_text: str, page_number: int) -> bool:
+        """Check if page contains pressure proof section."""
+        return 'pressure proof pressure' in page_text.lower() and 5 <= page_number <= 25
+
+
+    def _is_tvac_cycle_page(self, page_text: str, page_number: int) -> bool:
+        """Check if page contains TVAC cycle section."""
+        return (
+            'tvac cycle' in page_text.lower() 
+            and 'health check' not in page_text.lower()
+            and 'functional performance' not in page_text.lower()
+            and 20 <= page_number <= 55
+        )
+
+
+    def _process_tvac_cycle(self, pdf_document, page_number: int, 
+                        page_text: str, tvac_state: dict) -> int:
+        """Process TVAC cycle data across multiple pages."""
+        if tvac_state['count'] > 2:
+            return page_number
+        
+        lines = [line for line in page_text.strip().split('\n')]
+        
+        # Combine with next page
+        if page_number + 1 < len(pdf_document):
+            next_page_text = pdf_document[page_number + 1].get_text()
+            if next_page_text:
+                next_lines = [line for line in next_page_text.strip().split('\n')]
+                lines.extend(next_lines)
+        
+        # Extract TVAC results with appropriate label
+        tvac_label = tvac_state['labels'][tvac_state['count']]
+        self.extract_leakage(lines, tvac_label)
+        self.extract_hpiv_performance(lines, tvac_label)
+        self.extract_electrical_results(lines, tvac_label)
+        
+        tvac_state['count'] += 1
+        return page_number + 2
+
+
+    def _is_power_budget_page(self, page_text: str, page_number: int) -> bool:
+        """Check if page contains power budget section."""
+        return 'power budget' in page_text.lower() and page_number >= 40
+
+
+    def _extract_power_budget_multipage(self, pdf_document, page_number: int, 
+                                        page_text: str) -> int:
+        """Extract power budget data, combining multiple pages if needed."""
+        lines = [line for line in page_text.strip().split('\n')]
+        table_count = self._count_power_budget_tables(lines)
+        
+        # Collect lines from additional pages until we have 3 tables
+        while table_count < 3 and page_number + 1 < len(pdf_document):
+            next_page_text = pdf_document[page_number + 1].get_text()
+            if next_page_text:
+                next_lines = [line for line in next_page_text.strip().split('\n')]
+                lines.extend(next_lines)
+                table_count += 1
+                page_number += 1
+        
+        self.extract_power_budget(lines)
+        return page_number
+
+
+    def _count_power_budget_tables(self, lines: list[str]) -> int:
+        """Count number of power budget tables in lines."""
+        table_count = 0
+        for line in lines:
+            if 'table' in line.lower() and 'power budget' in line.lower():
+                table_count += 1
+        return table_count
 
     def extract_power_budget(self, lines: list[str]) -> None:
         """
@@ -1066,111 +1455,204 @@ class FMSData:
                 power_budget['peak'] = peak
                 self.fms_main_test_results[key] = power_budget
 
-    def extract_leakage(self, lines: list[str], tvac_label: str = None, search_proof_pressure: bool = False) -> None:
+    def extract_leakage(self, lines: list[str], tvac_label: str = None, 
+                    search_proof_pressure: bool = False) -> None:
         """
         Extract leakage test results from the provided lines of text, adds to fms_main_test_results attribute.
         Args:
             lines (list[str]): List of lines from the PDF page containing leakage test results.
             tvac_label (str): Optional label indicating the TVAC condition (e.g., 'hot', 'cold', 'room').
+            search_proof_pressure (bool): If True, search for proof pressure values.
         """
-        equal_value = '='
-        equal_values = ['=', '<', '>']
-
-        def parse_val(val):
-            nonlocal equal_value
-            equal_value = next((ev for ev in equal_values if ev in val), '=')
-            val = val.strip().lower().replace(equal_value, '')
-            try:
-                return float(val.replace('e', 'E')) if val else None
-            except ValueError:
-                return None
-
+        equal_value_tracker = {'value': '='}
+        
         for i, line in enumerate(lines):
             line_lower = line.strip().lower()
-
+            
             if search_proof_pressure:
-                if 'high pressure proof pressure' in line_lower:
-                    match = re.search(r"(\d+(?:\.\d+)?)\s*bara", line_lower)
-                    if match:
-                        pressure = float(match.group(1))
-                        self.fms_main_test_results[FMSMainParameters.HIGH_PROOF_PRESSURE.value] = {
-                        "value": pressure, "unit": "barA", 'lower': False, 'larger': False, 'equal': True
-                        }
+                self._extract_proof_pressures(line_lower, i, lines)
+            
+            self._extract_lp_fms_leakage(line_lower, i, lines, equal_value_tracker)
+            self._extract_hp_fms_leakage(line_lower, i, lines, equal_value_tracker)
+            self._extract_hpiv_leakage(line_lower, i, lines, tvac_label, equal_value_tracker)
+            self._extract_tv_leakage(line_lower, i, lines, tvac_label, equal_value_tracker)
 
-                elif 'low pressure proof pressure' in line_lower:
-                    match = re.search(r"(\d+(?:\.\d+)?)\s*bara", line_lower)
-                    if match:
-                        pressure = float(match.group(1))
-                        self.fms_main_test_results[FMSMainParameters.LOW_PROOF_PRESSURE.value] = {
-                        "value": pressure, "unit": "barA", 'lower': False, 'larger': False, 'equal': True
-                        }
 
-            if "lp fms – low pressure section" in line_lower:
-                act_val = parse_val(lines[i + 3])
-                self.fms_main_test_results[FMSMainParameters.LOW_PRESSURE_EXT_LEAK.value] = {
-                    "value": act_val, "unit": "scc/s GHe", 'lower': equal_value == '<', 'larger': equal_value == '>', 'equal': equal_value == '='
+    def _parse_value_with_comparator(self, val: str, equal_value_tracker: dict) -> float | None:
+        """
+        Parse a value string that may contain comparison operators (<, >, =).
+        Updates equal_value_tracker with the found operator.
+        """
+        equal_values = ['=', '<', '>']
+        equal_value = next((ev for ev in equal_values if ev in val), '=')
+        equal_value_tracker['value'] = equal_value
+        
+        val = val.strip().lower().replace(equal_value, '')
+        try:
+            return float(val.replace('e', 'E')) if val else None
+        except ValueError:
+            return None
+
+
+    def _create_result_dict(self, value: float, unit: str, 
+                        equal_value_tracker: dict) -> dict:
+        """Create a standardized result dictionary with value, unit, and comparators."""
+        equal_value = equal_value_tracker['value']
+        return {
+            "value": value,
+            "unit": unit,
+            'lower': equal_value == '<',
+            'larger': equal_value == '>',
+            'equal': equal_value == '='
+        }
+
+
+    def _extract_proof_pressures(self, line_lower: str, i: int, lines: list[str]) -> None:
+        """Extract high and low pressure proof pressure values."""
+        if 'high pressure proof pressure' in line_lower:
+            match = re.search(r"(\d+(?:\.\d+)?)\s*bara", line_lower)
+            if match:
+                pressure = float(match.group(1))
+                self.fms_main_test_results[FMSMainParameters.HIGH_PROOF_PRESSURE.value] = {
+                    "value": pressure,
+                    "unit": "barA",
+                    'lower': False,
+                    'larger': False,
+                    'equal': True
+                }
+        
+        elif 'low pressure proof pressure' in line_lower:
+            match = re.search(r"(\d+(?:\.\d+)?)\s*bara", line_lower)
+            if match:
+                pressure = float(match.group(1))
+                self.fms_main_test_results[FMSMainParameters.LOW_PROOF_PRESSURE.value] = {
+                    "value": pressure,
+                    "unit": "barA",
+                    'lower': False,
+                    'larger': False,
+                    'equal': True
                 }
 
-            elif "lp fms – high pressure section" in line_lower:
-                act_val_1 = parse_val(lines[i + 6])
-                act_val_2 = parse_val(lines[i + 7])
-                self.fms_main_test_results[FMSMainParameters.HIGH_PRESSURE_EXT_LEAK_LOW.value] = {
-                    "value": act_val_1, "unit": "scc/s GHe", 'lower': equal_value == '<', 'larger': equal_value == '>', 'equal': equal_value == '='
-                }
-                self.fms_main_test_results[FMSMainParameters.HIGH_PRESSURE_EXT_LEAK_HIGH.value] = {
-                    "value": act_val_2, "unit": "scc/s GHe", 'lower': equal_value == '<', 'larger': equal_value == '>', 'equal': equal_value == '='
-                }
 
-            elif "hpiv" in line_lower and "10 bara" in lines[i + 1].lower():
-                act_val = parse_val(lines[i + 3])
-                param_key = self.get_tvac_parameter(FMSMainParameters.HPIV_LOW_LEAK.value, tvac_label) if tvac_label is not None else FMSMainParameters.HPIV_LOW_LEAK.value
-                self.fms_main_test_results[param_key] = {
-                    "value": act_val, "unit": "scc/s GHe"
-                }
+    def _extract_lp_fms_leakage(self, line_lower: str, i: int, lines: list[str],
+                            equal_value_tracker: dict) -> None:
+        """Extract LP FMS low pressure section external leakage."""
+        if "lp fms – low pressure section" not in line_lower:
+            return
+        
+        act_val = self._parse_value_with_comparator(lines[i + 3], equal_value_tracker)
+        self.fms_main_test_results[FMSMainParameters.LOW_PRESSURE_EXT_LEAK.value] = \
+            self._create_result_dict(act_val, "scc/s GHe", equal_value_tracker)
 
-            elif "hpiv" in line_lower and "190 bara" in lines[i + 1].lower():
-                act_val = parse_val(lines[i + 3])
-                param_key = self.get_tvac_parameter(FMSMainParameters.HPIV_HIGH_LEAK.value, tvac_label) if tvac_label is not None else FMSMainParameters.HPIV_HIGH_LEAK.value
-                self.fms_main_test_results[param_key] = {
-                    "value": act_val, "unit": "scc/s GHe"
-                }
 
-            elif "tv" in line_lower and len(line_lower) < 10 and "10 bara" in lines[i + 1].lower():
-                act_val = parse_val(lines[i + 3])
-                param_key = self.get_tvac_parameter(FMSMainParameters.TV_LOW_LEAK.value, tvac_label) if tvac_label is not None else FMSMainParameters.TV_LOW_LEAK.value
-                self.fms_main_test_results[param_key] = {
-                    "value": act_val, "unit": "scc/s GHe"
-                }
-                if bool(tvac_label):
-                    line_idx = i + 3
-                    while line_idx < len(lines):
-                        if "10 bara" in lines[line_idx].strip().lower():
-                            act_val = parse_val(lines[line_idx + 2])
-                            self.fms_main_test_results[f"{tvac_label}_tv_low_leak_open"] = {
-                                "value": act_val, "unit": "scc/s GHe"
-                            }
-                            break
+    def _extract_hp_fms_leakage(self, line_lower: str, i: int, lines: list[str],
+                            equal_value_tracker: dict) -> None:
+        """Extract LP FMS high pressure section external leakage (low and high)."""
+        if "lp fms – high pressure section" not in line_lower:
+            return
+        
+        act_val_1 = self._parse_value_with_comparator(lines[i + 6], equal_value_tracker)
+        self.fms_main_test_results[FMSMainParameters.HIGH_PRESSURE_EXT_LEAK_LOW.value] = \
+            self._create_result_dict(act_val_1, "scc/s GHe", equal_value_tracker)
+        
+        act_val_2 = self._parse_value_with_comparator(lines[i + 7], equal_value_tracker)
+        self.fms_main_test_results[FMSMainParameters.HIGH_PRESSURE_EXT_LEAK_HIGH.value] = \
+            self._create_result_dict(act_val_2, "scc/s GHe", equal_value_tracker)
 
-                        else:
-                            line_idx += 1
 
-            elif "tv" in line_lower and len(line_lower) < 10 and "190 bara" in lines[i + 1].lower():
-                act_val = parse_val(lines[i + 3])
-                param_key = self.get_tvac_parameter(FMSMainParameters.TV_HIGH_LEAK.value, tvac_label) if tvac_label is not None else FMSMainParameters.TV_HIGH_LEAK.value
-                self.fms_main_test_results[param_key] = {
-                    "value": act_val, "unit": "scc/s GHe"
+    def _extract_hpiv_leakage(self, line_lower: str, i: int, lines: list[str],
+                            tvac_label: str | None, equal_value_tracker: dict) -> None:
+        """Extract HPIV leakage at low (10 bara) and high (190 bara) pressures."""
+        if "hpiv" not in line_lower:
+            return
+        
+        if "10 bara" in lines[i + 1].lower():
+            act_val = self._parse_value_with_comparator(lines[i + 3], equal_value_tracker)
+            param_key = self.get_tvac_parameter(
+                FMSMainParameters.HPIV_LOW_LEAK.value, tvac_label
+            ) if tvac_label else FMSMainParameters.HPIV_LOW_LEAK.value
+            
+            self.fms_main_test_results[param_key] = {
+                "value": act_val,
+                "unit": "scc/s GHe"
+            }
+        
+        elif "190 bara" in lines[i + 1].lower():
+            act_val = self._parse_value_with_comparator(lines[i + 3], equal_value_tracker)
+            param_key = self.get_tvac_parameter(
+                FMSMainParameters.HPIV_HIGH_LEAK.value, tvac_label
+            ) if tvac_label else FMSMainParameters.HPIV_HIGH_LEAK.value
+            
+            self.fms_main_test_results[param_key] = {
+                "value": act_val,
+                "unit": "scc/s GHe"
+            }
+
+
+    def _extract_tv_leakage(self, line_lower: str, i: int, lines: list[str],
+                        tvac_label: str | None, equal_value_tracker: dict) -> None:
+        """Extract TV leakage at low (10 bara) and high (190 bara) pressures."""
+        if "tv" not in line_lower or len(line_lower) >= 10:
+            return
+        
+        if "10 bara" in lines[i + 1].lower():
+            self._extract_tv_low_leakage(i, lines, tvac_label, equal_value_tracker)
+        
+        elif "190 bara" in lines[i + 1].lower():
+            self._extract_tv_high_leakage(i, lines, tvac_label, equal_value_tracker)
+
+
+    def _extract_tv_low_leakage(self, i: int, lines: list[str],
+                            tvac_label: str | None, equal_value_tracker: dict) -> None:
+        """Extract TV low pressure (10 bara) leakage, including open state if TVAC."""
+        act_val = self._parse_value_with_comparator(lines[i + 3], equal_value_tracker)
+        param_key = self.get_tvac_parameter(
+            FMSMainParameters.TV_LOW_LEAK.value, tvac_label
+        ) if tvac_label else FMSMainParameters.TV_LOW_LEAK.value
+        
+        self.fms_main_test_results[param_key] = {
+            "value": act_val,
+            "unit": "scc/s GHe"
+        }
+        
+        # Extract open state leakage for TVAC tests
+        if tvac_label:
+            self._extract_tv_open_leakage(i, lines, tvac_label, "10 bara", "low", equal_value_tracker)
+
+
+    def _extract_tv_high_leakage(self, i: int, lines: list[str],
+                                tvac_label: str | None, equal_value_tracker: dict) -> None:
+        """Extract TV high pressure (190 bara) leakage, including open state if TVAC."""
+        act_val = self._parse_value_with_comparator(lines[i + 3], equal_value_tracker)
+        param_key = self.get_tvac_parameter(
+            FMSMainParameters.TV_HIGH_LEAK.value, tvac_label
+        ) if tvac_label else FMSMainParameters.TV_HIGH_LEAK.value
+        
+        self.fms_main_test_results[param_key] = {
+            "value": act_val,
+            "unit": "scc/s GHe"
+        }
+        
+        # Extract open state leakage for TVAC tests
+        if tvac_label:
+            self._extract_tv_open_leakage(i, lines, tvac_label, "190 bara", "high", equal_value_tracker)
+
+
+    def _extract_tv_open_leakage(self, start_idx: int, lines: list[str],
+                                tvac_label: str, pressure_str: str, 
+                                pressure_type: str, equal_value_tracker: dict) -> None:
+        """Extract TV open state leakage by searching forward for pressure marker."""
+        line_idx = start_idx + 3
+        
+        while line_idx < len(lines):
+            if pressure_str in lines[line_idx].strip().lower():
+                act_val = self._parse_value_with_comparator(lines[line_idx + 2], equal_value_tracker)
+                self.fms_main_test_results[f"{tvac_label}_tv_{pressure_type}_leak_open"] = {
+                    "value": act_val,
+                    "unit": "scc/s GHe"
                 }
-                if bool(tvac_label):
-                    line_idx = i + 3
-                    while line_idx < len(lines):
-                        if "190 bara" in lines[line_idx].strip().lower():
-                            act_val = parse_val(lines[line_idx + 2])
-                            self.fms_main_test_results[f"{tvac_label}_tv_high_leak_open"] = {
-                                "value": act_val, "unit": "scc/s GHe"
-                            }
-                            break
-                        else:
-                            line_idx += 1      
+                break
+            line_idx += 1
 
     def extract_hpiv_performance(self, lines: list[str], tvac_label: str = None) -> None:
         """
@@ -1179,66 +1661,112 @@ class FMSData:
             lines (list[str]): List of lines from the PDF page containing HPIV performance test results.
             tvac_label (str): Optional label indicating the TVAC condition (e.g., 'hot', 'cold', 'room').
         """
-        def parse_val(val: str) -> float | None:
-            val = val.strip().lower().replace('n/a', '').replace('-', '')
-            try:
-                return float(val) if val else None
-            except ValueError:
-                return None
-
         for i, line in enumerate(lines):
             line_lower = line.strip().lower()
-            # HPIV Opening
+            
             if "hpiv – opening" in line_lower:
-                values = lines[i + 1:i + 7]
-                power = parse_val(values[1])
-                response = parse_val(values[4])
-                
-                power_key = self.get_tvac_parameter(FMSMainParameters.HPIV_OPENING_POWER.value, tvac_label) if tvac_label is not None else FMSMainParameters.HPIV_OPENING_POWER.value
-                response_key = self.get_tvac_parameter(FMSMainParameters.HPIV_OPENING_RESPONSE.value, tvac_label) if tvac_label is not None else FMSMainParameters.HPIV_OPENING_RESPONSE.value
-                
-                self.fms_main_test_results[power_key] = {
-                    "value": power, "unit": "W"
-                }
-                self.fms_main_test_results[response_key] = {
-                    "value": response, "unit": "ms"
-                }
-
-            # HPIV Hold
+                self._extract_hpiv_opening(i, lines, tvac_label)
+            
             elif "hpiv – hold" in line_lower:
-                values = lines[i + 1:i + 7]
-                hold_power = parse_val(values[1])
-                hold_key = self.get_tvac_parameter(FMSMainParameters.HPIV_HOLD_POWER.value, tvac_label) if tvac_label is not None else FMSMainParameters.HPIV_HOLD_POWER.value
-                
-                self.fms_main_test_results[hold_key] = {
-                    "value": hold_power, "unit": "W"
-                }
-
-            # HPIV Closing
+                self._extract_hpiv_hold(i, lines, tvac_label)
+            
             elif "hpiv - closing" in line_lower:
-                values = lines[i + 1:i + 7]
-                close_resp = parse_val(values[4])
-                closing_key = self.get_tvac_parameter(FMSMainParameters.HPIV_CLOSING_RESPONSE.value, tvac_label) if tvac_label is not None else FMSMainParameters.HPIV_CLOSING_RESPONSE.value
-                
-                self.fms_main_test_results[closing_key] = {
-                    "value": close_resp, "unit": "ms"
-                }
+                self._extract_hpiv_closing(i, lines, tvac_label)
+            
+            elif self._is_hpiv_pullin_dropout_line(i, line_lower, lines):
+                self._extract_hpiv_pullin_dropout(i, lines, tvac_label)
 
-            # HPIV Pull-in and Drop-out
-            elif "hpiv" in line_lower and "pull-in" in lines[i - 12].lower():
-                # This line contains the actual values
-                pullin = parse_val(lines[i + 2])
-                dropout = parse_val(lines[i + 5])
 
-                pullin_key = self.get_tvac_parameter("hpiv_pullin_voltage", tvac_label) if tvac_label is not None else "hpiv_pullin_voltage"
-                dropout_key = self.get_tvac_parameter("hpiv_dropout_voltage", tvac_label) if tvac_label is not None else "hpiv_dropout_voltage"
+    def _parse_hpiv_value(self, val: str) -> float | None:
+        """Parse HPIV value string, handling N/A and dashes."""
+        val = val.strip().lower().replace('n/a', '').replace('-', '')
+        try:
+            return float(val) if val else None
+        except ValueError:
+            return None
 
-                self.fms_main_test_results[pullin_key] = {
-                    "value": pullin, "unit": "V"
-                }
-                self.fms_main_test_results[dropout_key] = {
-                    "value": dropout, "unit": "V"
-                }
+
+    def _extract_hpiv_opening(self, i: int, lines: list[str], tvac_label: str | None) -> None:
+        """Extract HPIV opening power and response time."""
+        values = lines[i + 1:i + 7]
+        power = self._parse_hpiv_value(values[1])
+        response = self._parse_hpiv_value(values[4])
+        
+        power_key = self.get_tvac_parameter(
+            FMSMainParameters.HPIV_OPENING_POWER.value, tvac_label
+        ) if tvac_label else FMSMainParameters.HPIV_OPENING_POWER.value
+        
+        response_key = self.get_tvac_parameter(
+            FMSMainParameters.HPIV_OPENING_RESPONSE.value, tvac_label
+        ) if tvac_label else FMSMainParameters.HPIV_OPENING_RESPONSE.value
+        
+        self.fms_main_test_results[power_key] = {
+            "value": power, "unit": "W"
+        }
+        self.fms_main_test_results[response_key] = {
+            "value": response, "unit": "ms"
+        }
+
+
+    def _extract_hpiv_hold(self, i: int, lines: list[str], tvac_label: str | None) -> None:
+        """Extract HPIV hold power."""
+        values = lines[i + 1:i + 7]
+        hold_power = self._parse_hpiv_value(values[1])
+        
+        hold_key = self.get_tvac_parameter(
+            FMSMainParameters.HPIV_HOLD_POWER.value, tvac_label
+        ) if tvac_label else FMSMainParameters.HPIV_HOLD_POWER.value
+        
+        self.fms_main_test_results[hold_key] = {
+            "value": hold_power, "unit": "W"
+        }
+
+
+    def _extract_hpiv_closing(self, i: int, lines: list[str], tvac_label: str | None) -> None:
+        """Extract HPIV closing response time."""
+        values = lines[i + 1:i + 7]
+        close_resp = self._parse_hpiv_value(values[4])
+        
+        closing_key = self.get_tvac_parameter(
+            FMSMainParameters.HPIV_CLOSING_RESPONSE.value, tvac_label
+        ) if tvac_label else FMSMainParameters.HPIV_CLOSING_RESPONSE.value
+        
+        self.fms_main_test_results[closing_key] = {
+            "value": close_resp, "unit": "ms"
+        }
+
+
+    def _is_hpiv_pullin_dropout_line(self, i: int, line_lower: str, lines: list[str]) -> bool:
+        """Check if this line contains HPIV pull-in/drop-out data."""
+        if "hpiv" not in line_lower:
+            return False
+        
+        # Check if "pull-in" appears 12 lines before
+        if i < 12:
+            return False
+        
+        return "pull-in" in lines[i - 12].lower()
+
+
+    def _extract_hpiv_pullin_dropout(self, i: int, lines: list[str], tvac_label: str | None) -> None:
+        """Extract HPIV pull-in and drop-out voltages."""
+        pullin = self._parse_hpiv_value(lines[i + 2])
+        dropout = self._parse_hpiv_value(lines[i + 5])
+        
+        pullin_key = self.get_tvac_parameter(
+            "hpiv_pullin_voltage", tvac_label
+        ) if tvac_label else "hpiv_pullin_voltage"
+        
+        dropout_key = self.get_tvac_parameter(
+            "hpiv_dropout_voltage", tvac_label
+        ) if tvac_label else "hpiv_dropout_voltage"
+        
+        self.fms_main_test_results[pullin_key] = {
+            "value": pullin, "unit": "V"
+        }
+        self.fms_main_test_results[dropout_key] = {
+            "value": dropout, "unit": "V"
+        }
 
     def extract_electrical_results(self, lines: list[str], tvac_label: str = None) -> None:
         """

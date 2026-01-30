@@ -940,7 +940,6 @@ class FMSQuery:
                     if plot and 'slope' in test_type.lower():
                         flows = total_flow
                         powers = np.array(self.tv_powers)
-                        flow_power_slope = self.get_flow_power_slope(flows, powers)
                         with plot_output:
                             plot_output.clear_output()
                             self.check_tv_slope(**flow_power_slope, correction = correction, serial = self.fms_entry.fms_id)
@@ -951,77 +950,6 @@ class FMSQuery:
                     display(plot_output)
                     on_correction_change({})
                 return image
-
-    def get_flow_power_slope(self, flows: list[float], powers: list[float], num_points: int = 3000) -> dict:
-        """
-        Calculate the flow-power slope for specified ranges of flow rates.
-        Args:
-            flows (list[float]): List of flow rate values.
-            powers (list[float]): List of power values.
-            num_points (int): Number of points for smoothing.
-        Returns:
-            dict: A dictionary containing smoothed power and flow values, slopes, and intercepts for 1-2 mg/s and 2-4 mg/s ranges.
-        """
-        mask = powers > 0.2
-        flows = flows[mask]
-        powers = powers[mask]
-
-        def get_region(flow_vals: np.ndarray, power_vals: np.ndarray, lower_bound: float, upper_bound: float) -> tuple[np.ndarray, np.ndarray]:
-            below_idx = np.where(flow_vals < lower_bound)[0]
-            above_idx = np.where(flow_vals > upper_bound)[0]
-
-            if len(below_idx) == 0:
-                start_idx = 0
-            else:
-                start_idx = below_idx[-1]
-
-            if len(above_idx) == 0:
-                end_idx = len(flow_vals) - 1
-            else:
-                end_idx = above_idx[0]
-
-            power_segment = power_vals[start_idx:end_idx + 1]
-            flow_segment = flow_vals[start_idx:end_idx + 1]
-            
-            flow_segment = np.clip(flow_segment, lower_bound, upper_bound)
-            
-            return power_segment, flow_segment
-
-        def smooth_and_slope(power_segment: np.ndarray, flow_segment: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
-            if len(power_segment) < 2 or len(flow_segment) < 2:
-                return np.array([]), np.array([]), 0, 0
-
-            interp_func = interp1d(power_segment, flow_segment, kind='linear', fill_value="extrapolate")
-            power_smooth = np.linspace(power_segment.min(), power_segment.max(), num_points)
-            flow_smooth = interp_func(power_smooth)
-
-            model = LinearRegression()
-            model.fit(power_smooth.reshape(-1, 1), flow_smooth)
-            slope = model.coef_[0]
-            intercept = model.intercept_
-
-            return power_smooth, flow_smooth, slope, intercept
-
-        # 1–2 mg/s
-        tv_power_12, total_flows_12 = get_region(flows, powers, 1, 2)
-        tv_power_12_smooth, total_flows_12_smooth, slope12, intercept12 = smooth_and_slope(tv_power_12, total_flows_12)
-
-        # 2–4 mg/s
-        tv_power_24, total_flows_24 = get_region(flows, powers, 2, 4)
-        tv_power_24_smooth, total_flows_24_smooth, slope24, intercept24 = smooth_and_slope(tv_power_24, total_flows_24)
-
-        array_dict = {
-            'tv_power_12': tv_power_12_smooth,
-            'total_flows_12': total_flows_12_smooth,
-            'slope12': slope12,
-            'intercept12': intercept12,
-            'tv_power_24': tv_power_24_smooth,
-            'total_flows_24': total_flows_24_smooth,
-            'slope24': slope24,
-            'intercept24': intercept24
-        }
-
-        return array_dict
 
     def check_tv_slope(self, tv_power_12: np.ndarray, tv_power_24: np.ndarray, total_flows_12: np.ndarray, \
                        total_flows_24: np.ndarray, slope12: float, slope24: float, intercept12: float, intercept24: float, correction: bool = False,\
