@@ -79,7 +79,7 @@ class FMSListener(FileSystemEventHandler):
         fms_data (FMS_data): Instance of FMS_data containing the processed test data.
     """
 
-    def __init__(self, path="FMS_data"):
+    def __init__(self, path="FMS_data", fms_data: "FMSData" = None):
         """
         Initialize the HPIV data listener.
 
@@ -94,10 +94,12 @@ class FMSListener(FileSystemEventHandler):
         self.csv_files = []
         self._csv_timer = None
         self.test_type = None
+        self.fms_data = fms_data
+
 
     def _process_csv_batch(self):
         try:
-            self.fms_data = FMSData(csv_files=self.csv_files.copy())
+            self.fms_data.csv_files = self.csv_files.copy()
             self.fms_data.test_type = self.test_type
             self.csv_files.clear()
             self.processed = True
@@ -147,7 +149,7 @@ class FMSListener(FileSystemEventHandler):
                 self.test_type = None
 
             try:
-                self.fms_data = FMSData(flow_test_file=event.src_path)
+                self.fms_data.flow_test_file = event.src_path
                 self.fms_data.test_type = self.test_type
                 self.processed = True
             except Exception as e:
@@ -162,7 +164,7 @@ class FMSListener(FileSystemEventHandler):
 
         elif filename.endswith('.pdf'):
             try:
-                self.fms_data = FMSData(pdf_file=event.src_path)
+                self.fms_data.pdf_file = event.src_path
                 self.fms_data.extract_FMS_test_results()
                 self.processed = True
             except Exception as e:
@@ -701,8 +703,10 @@ class FMSData:
         self.inlet_pressure = round(mean_inlet_pressure / 10) * 10
         self.inlet_pressure = 10 if self.inlet_pressure < 100 else 190
         self.temperature = df[fms.LPT_TEMP.value].mean()
+
         temperature_check = [-15, 22, 70]
         temperature_types = [FunctionalTestType.COLD, FunctionalTestType.ROOM, FunctionalTestType.HOT]
+
         self.temperature = temperature_check[np.argmin([abs(self.temperature - t) for t in temperature_check])]
         self.temperature_type = temperature_types[np.argmin([abs(self.temperature - t) for t in temperature_check])]
 
@@ -731,6 +735,7 @@ class FMSData:
             self.response_times, self.response_regions = self.get_response_times(df = self.df)
 
     def get_response_times(self, df: pd.DataFrame) -> dict[str, list]:
+        
         response_times = {}
         response_regions = {}
 
@@ -807,12 +812,7 @@ class FMSData:
                 lpt_idx = cl_end_idx  
 
             lpt_start_time = log_time[lpt_idx]
-            # plt.plot(log_time[cl_start_idx:cl_end_idx + 1], lpt_pressure[cl_start_idx:cl_end_idx + 1], 'r-', label='LPT Pressure Segment')
-            # plt.axhline(y=set_point, color='g', linestyle='--', label='Set Point')
-            # plt.axvline(x=cl_start_time, color='b', linestyle='--', label='CL Start Time')
-            # plt.axvline(x=lpt_start_time, color='m', linestyle='--', label='LPT Start Time')
-            # plt.legend()
-            # plt.show()
+
             if set_idx == 0:
                 key = f"response_time_to_{set_point}_barA"
             elif set_idx == len(self.lpt_set_points) - 1:
@@ -826,9 +826,6 @@ class FMSData:
             tau_list.append(lpt_start_time - cl_start_time)
 
             response_times[key] = tau_list
-
-        # print(response_times)
-        # print(response_regions)
 
         return response_times, response_regions
 
@@ -884,557 +881,6 @@ class FMSData:
             self.max_flow_rates
         )
 
-    def show_test_input_field(self, session: "Session", fms_sql: "FMSLogicSQL") -> None:
-        """
-        Create a clean input field for TV test remarks with properly styled widgets.
-        Also adds a dropdown field with suggestions for the FMS ID and gas type.
-        Args:
-            session (Session): SQLAlchemy session for database queries.
-            fms_sql (FMS_SQL_Logic): SQL Handling class instance to update with the extracted test results.
-        """
-        label_width = '150px'
-        field_width = '600px'
-        self.gas_type = None
-
-        def field(description):
-            return {
-                'description': description,
-                'style': {'description_width': label_width},
-                'layout': widgets.Layout(width=field_width, height='50px')
-            }
-        
-        if session:
-            fms_suggestions = session.query(FMSMain).filter(FMSMain.fms_id != None).all()
-            fms_id_suggestions = [fms.fms_id for fms in fms_suggestions if fms.fms_id]
-        else:   
-            fms_id_suggestions = []
-
-        fms_id_widget = widgets.Combobox(
-            **field("FMS ID:"),
-            options=fms_id_suggestions,
-            ensure_option=False,
-            placeholder='Type or select...'
-        )
-
-        # Gas type selection
-        gas_type_widget = widgets.Dropdown(
-            options=['Xe', 'Kr'],
-            value='Xe',
-            description='Gas type:',
-            style={'description_width': label_width},
-            layout=widgets.Layout(width=field_width, height='50px')
-        )
-
-        # Test type input
-        test_widget = widgets.Dropdown(
-            options=['open_loop', 'slope', 'closed_loop', 'fr_characteristics', 'tvac_cycle'],
-            value=self.test_type,
-            description='Test Type:',
-            style={'description_width': label_width},
-            layout=widgets.Layout(width=field_width, height='50px')
-        )
-
-        # Submit button
-        submit_button = widgets.Button(
-            description="Continue",
-            button_style="success",
-            layout=widgets.Layout(width='150px', margin='10px 0px 0px 160px')  # align under field
-        )
-
-        output = widgets.Output()
-
-        # Form layout
-        form = widgets.VBox([
-            widgets.HBox([fms_id_widget]),
-            widgets.HBox([gas_type_widget]),
-            widgets.HBox([test_widget]),
-            submit_button,
-            output
-        ], layout=widgets.Layout(padding='10px 0px 10px 0px'))
-
-        display(form)
-        submitted = {'done': False}
-        confirmed_once = {'clicked': False}
-        submit_button._click_handlers.callbacks.clear()
-        # Submission handler
-        def on_submit_clicked(b):
-            with output:
-                if submitted['done']:
-                    return
-                output.clear_output()
-                if not confirmed_once['clicked']:
-                    confirmed_once['clicked'] = True
-                    print("Click again to confirm.")
-                    return
-
-                self.test_type = test_widget.value.strip()
-                self.selected_fms_id = fms_id_widget.value
-                self.gas_type = gas_type_widget.value
-
-                # Validate FMS ID format: ##-###
-                if not self.selected_fms_id or not re.match(r'^\d{2}-\d{3}$', str(self.selected_fms_id)):
-                    print("Error: FMS ID must be in the format ##-### (e.g., 25-050).")
-                    confirmed_once['clicked'] = False
-                    return
-
-                submitted['done'] = True
-                confirmed_once['clicked'] = False
-                if self.test_type in ["open_loop", "slope", "closed_loop", "fr_characteristics"]:
-                    self.extract_slope_data()
-                else:
-                    self.extract_tvac_from_csv()
-
-                print("Test Results have been Submitted!")
-
-                fms_sql.functional_test_results = self.functional_test_results
-                fms_sql.test_id = self.test_id
-                fms_sql.selected_fms_id = self.selected_fms_id
-                fms_sql.inlet_pressure = self.inlet_pressure
-                fms_sql.outlet_pressure = self.outlet_pressure
-                fms_sql.temp_type = self.temperature_type
-                fms_sql.temperature = self.temperature
-                fms_sql.units = self.units
-                fms_sql.test_type = self.test_type
-                fms_sql.gas_type = self.gas_type
-                fms_sql.response_regions = self.response_regions
-                fms_sql.response_times = self.response_times
-                fms_sql.flow_power_slope = self.flow_power_slope.copy()
-                if self.test_type.endswith('open_loop') or self.test_type.endswith('slope') or self.test_type.endswith('closed_loop'):
-                    fms_sql.update_flow_test_results()
-                elif self.test_type == "fr_characteristics":
-                    fms_sql.update_fr_characteristics_results()
-                else:
-                    fms_sql.update_tvac_cycle_results()
-                if not self.test_type == "tvac_cycle":
-                    self.fms_test_remark_field(fms_sql)
-
-        submit_button.on_click(on_submit_clicked)
-
-    def fms_test_remark_field(self, fms_sql: "FMSLogicSQL") -> None:
-        """
-        Create a clean input field for FMS test remarks with properly styled widgets.
-        Args:
-            fms_sql (FMSLogicSQL): SQL Handling class instance to update the remark in the database.
-        """
-        label_width = '150px'
-        field_width = '600px'
-        
-        title = widgets.HTML("<h3>Add a remark if necessary</h3>")
-
-        def field(description):
-            return {
-                'description': description,
-                'style': {'description_width': label_width},
-                'layout': widgets.Layout(width=field_width, height='40px')
-            }
-
-        # Remark input
-        remark_widget = widgets.Textarea(**field("Remark:"))
-
-        # Submit button
-        submit_button = widgets.Button(
-            description="Submit Remark",
-            button_style="success",
-            layout=widgets.Layout(width='150px', margin='10px 0px 0px 160px')  # align under field
-        )
-
-        submitted = {'done': False}
-        output = widgets.Output()
-
-        # Form layout
-        form = widgets.VBox([
-            title,
-            widgets.HTML('<p>Results are submitted, examine the plots and add a remark if necessary.</p>'
-            ),
-            widgets.HBox([remark_widget]),
-            submit_button,
-            output
-        ], layout=widgets.Layout(
-            border='1px solid #ccc',
-            padding='20px',
-            width='fit-content',
-            gap='15px',
-            background_color="#f9f9f9"
-        ))
-
-        display(form)
-
-        if self.test_type.endswith('open_loop') or self.test_type.endswith('closed_loop') or "slope" in self.test_type:
-            look_up_table = FMSFunctionalTests
-            if self.test_type.endswith('closed_loop'):
-                self.plot_closed_loop(serial=self.selected_fms_id, gas_type=self.gas_type)
-            else:
-                self.tv_slope = None
-                self.plot_open_loop(serial=self.selected_fms_id, gas_type=self.gas_type)
-                if self.flow_power_slope:
-                    self.check_tv_slope(**self.flow_power_slope)
-
-        elif self.test_type == "fr_characteristics":
-            session = fms_sql.Session()
-            look_up_table = FMSFRTests
-            fms_entry = session.query(FMSMain).filter(FMSMain.fms_id == self.selected_fms_id).first()
-            if fms_entry:
-                manifold = fms_entry.manifold
-                if manifold:
-                    self.ratio = manifold[0].ac_ratio_specified
-
-            self.plot_fr_characteristics(serial=self.selected_fms_id, gas_type=self.gas_type)
-        else:
-            look_up_table = FMSTvac
-            self.plot_tvac_cycle(serial=self.selected_fms_id)
-
-        # Submission handler
-        def on_submit_clicked(b):
-            with output:
-                output.clear_output()
-                remark = remark_widget.value.strip()
-                if not remark:
-                    print("No remark submitted.")
-                    return
-                session = fms_sql.Session()
-                last_entry = (
-                    session.query(look_up_table)
-                    .filter_by(fms_id=self.selected_fms_id)
-                    .order_by(look_up_table.id.desc())
-                    .first()
-                )
-                if last_entry:
-                    prev_remark = last_entry.remark or ""
-                    if remark == prev_remark:
-                        print("Already submitted!")
-                    else:
-                        last_entry.remark = remark
-                        session.commit()
-                        print("Remark Submitted!")
-                else:
-                    print("No test run entry found for this FMS.")
-                session.close()
-
-        submit_button.on_click(on_submit_clicked)
-
-    def plot_closed_loop(self, serial: str = '25-050', gas_type: str = 'Xe'):
-        """
-        Plot closed loop flow test data from the extracted DataFrame.
-        Args:
-            serial (str): FMS serial number for the plot title.
-            gas_type (str): Gas type used in the test for labeling.
-        """
-        plt.figure(figsize=(9, 7))
-        plt.plot(self.df[FMSFlowTestParameters.LOGTIME.value], self.df[FMSFlowTestParameters.ANODE_FLOW.value], label=f'Anode Flow [{self.units[FMSFlowTestParameters.ANODE_FLOW.value]}]')
-        plt.plot(self.df[FMSFlowTestParameters.LOGTIME.value], self.df[FMSFlowTestParameters.CATHODE_FLOW.value], label=f'Cathode Flow [{self.units[FMSFlowTestParameters.CATHODE_FLOW.value]}]')
-        plt.plot(self.df[FMSFlowTestParameters.LOGTIME.value], self.df[FMSFlowTestParameters.CLOSED_LOOP_PRESSURE.value], label=f'Closed Loop Setpoint [{self.units[FMSFlowTestParameters.CLOSED_LOOP_PRESSURE.value]}]')
-        plt.plot(self.df[FMSFlowTestParameters.LOGTIME.value], self.df[FMSFlowTestParameters.LPT_PRESSURE.value], label=f'LPT Pressure [{self.units[FMSFlowTestParameters.LPT_PRESSURE.value]}]')
-        
-        title = f'LP FMS - SN {serial}, TRP at {self.temperature} [degC], MLI, {self.inlet_pressure} [barA] Inlet Pressure, {self.test_type.replace("_", " ").title()}, Pvac <1E-1 [mbarA], {self.outlet_pressure} [mbar] Outlet Pressure'
-        plt.xlabel('Time [s]')
-        plt.ylabel(f'Mass Flow Rate [{self.units[FMSFlowTestParameters.ANODE_FLOW.value]} {gas_type}]/LPT & Setpoint Pressure [barA]')
-        plt.title(title, wrap = True)
-        plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-        plt.grid()
-        plt.tight_layout()
-        plt.show()
-
-        self.plot_tv_closed_loop(title = title)
-
-    def plot_tv_closed_loop(self, title: str = None) -> None:
-        """
-        Plot TV power and temperature during closed loop flow test (in chain with plot_closed_loop method).
-        Args:
-            title (str): Optional title for the plot.
-        """
-        fig, ax1 = plt.subplots()
-
-        color1 = 'tab:blue'
-        ax1.set_xlabel('Time [s]')
-        ax1.set_ylabel(f'TV Power [{self.units[FMSFlowTestParameters.TV_POWER.value]}]', color=color1)
-        ax1.plot(self.df[FMSFlowTestParameters.LOGTIME.value], self.df[FMSFlowTestParameters.AVG_TV_POWER.value], color=color1, label='TV Power')
-        ax1.tick_params(axis='y', labelcolor=color1)
-
-        ax2 = ax1.twinx()
-        color2 = 'tab:red'
-        ax2.set_ylabel(f'TV PT1000 Temperature [{self.units[FMSFlowTestParameters.TV_PT1000.value]}]', color=color2)
-        ax2.plot(self.df[FMSFlowTestParameters.LOGTIME.value], self.df[FMSFlowTestParameters.TV_PT1000.value], color=color2, label='TV PT1000 Temperature')
-        ax2.tick_params(axis='y', labelcolor=color2)
-
-        if title:
-            plt.title(title, wrap=True)
-        fig.tight_layout()
-        plt.grid(True)
-        plt.show()
-
-    def plot_open_loop(self, serial: str = '25-050', gas_type: str = 'Xe') -> None:
-        """
-        Plot slope/open loop flow test data from the extracted DataFrame.
-        Args:
-            serial (str): FMS serial number for the plot title.
-            gas_type (str): Gas type used in the test for labeling.
-        """
-        fms = FMSFlowTestParameters
-        fig, ax1 = plt.subplots(figsize=(9, 7))
-        color1 = 'tab:blue'
-        color2 = 'tab:orange'
-        color3 = 'tab:green'
-
-        ax1.set_xlabel('Time [s]')
-        ax1.set_ylabel(f'TV Temperature [{self.units[fms.TV_PT1000.value]}]')
-        l1, = ax1.plot(self.df[fms.LOGTIME.value], self.df[fms.TV_PT1000.value], label='TV Temperature')
-
-        ax2 = ax1.twinx()
-        ax2.set_ylabel(
-            f'Total Flow [{self.units[fms.TOTAL_FLOW.value]} {gas_type}] / LPT Pressure [{self.units[fms.LPT_PRESSURE.value]}]'
-        )
-        l2, = ax2.plot(self.df[fms.LOGTIME.value], self.df[fms.TOTAL_FLOW.value], label='Total Flow', color=color2)
-        l3, = ax2.plot(self.df[fms.LOGTIME.value], self.df[fms.LPT_PRESSURE.value], label='LPT Pressure', color=color3)
-
-        title = (
-            f'LP FMS - SN {serial}, TRP at {self.temperature} [degC], MLI, '
-            f'{self.inlet_pressure} [barA] Inlet Pressure, '
-        )
-
-        if self.tv_slope:
-            title += f'{self.tv_slope:.2f} [W/min], '
-        else:
-            title += f'{max(self.df[fms.AVG_TV_POWER.value]):.1f}W, '
-
-        title += f'Pvac <1E-1 [mbarA], {self.outlet_pressure} [mbar] Outlet Pressure'
-        plt.title(title, wrap=True)
-
-        lines = [l1, l2, l3]
-        labels = [line.get_label() for line in lines]
-        plt.grid(True)
-
-        ax1.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-        plt.show()
-        
-    def plot_fr_characteristics(self, gas_type: str = 'Xe', serial: str = '25-050') -> None:
-        """
-        Plot FR characteristics flow test data from the extracted DataFrame.
-        Args:
-            gas_type (str): Gas type used in the test for labeling.
-            serial (str): FMS serial number for the plot title.
-        """
-        fig, ax1 = plt.subplots(figsize=(9, 7))
-        if not self.ratio:
-            self.ratio = 13
-
-        l1, = ax1.plot(self.df[FMSFlowTestParameters.LPT_PRESSURE.value], self.df[FMSFlowTestParameters.ANODE_FLOW.value], label=f'Anode Flow [{self.units[FMSFlowTestParameters.ANODE_FLOW.value]}]')
-        l2, = ax1.plot(self.df[FMSFlowTestParameters.LPT_PRESSURE.value], self.df[FMSFlowTestParameters.CATHODE_FLOW.value], label=f'Cathode Flow [{self.units[FMSFlowTestParameters.CATHODE_FLOW.value]}]')
-        l3, = ax1.plot(self.df[FMSFlowTestParameters.LPT_PRESSURE.value], self.df[FMSFlowTestParameters.TOTAL_FLOW.value], label=f'Total Flow [{self.units[FMSFlowTestParameters.TOTAL_FLOW.value]}]')
-        ax1.set_xlabel('LPT Pressure [barA]')
-        ax1.set_ylabel(f'Mass Flow Rate [{self.units[FMSFlowTestParameters.ANODE_FLOW.value]} {gas_type}]')
-        ax1.grid(True)
-
-        title = (
-            f'{gas_type} LP FMS - SN {serial} - {self.inlet_pressure} [barA] Inlet Pressure - {self.outlet_pressure} [mbar] Outlet Pressure'
-            f' - TRP at {self.temperature} [degC] - Pvac <1E-1 [mbar]'
-        )
-
-        ax2 = ax1.twinx()
-        l4, = ax2.plot(self.df[FMSFlowTestParameters.LPT_PRESSURE.value], self.df['ac_ratio'], color='tab:red', label='Anode/Cathode Ratio')
-        l5_upper = ax2.axhline(self.ratio + 0.5, color='tab:orange', linestyle='--', label=f'Ratio Tolerance: {self.ratio}')
-        l5_lower = ax2.axhline(self.ratio - 0.5, color='tab:orange', linestyle='--', label='Ratio Tolerance')
-        
-        ax2.set_ylabel('Anode-to-Cathode Ratio')
-        ax2.set_ylim(bottom=0, top=20)
-        ax2.set_yticks(np.arange(0, 21, 1))
-        # Combine legends from both axes
-        lines = [l1, l2, l3, l4, l5_upper]
-        labels = [line.get_label() for line in lines]
-        # Put legend below the plot instead of on the side
-        ax1.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-
-        plt.title(title, wrap=True)
-        plt.tight_layout(rect=[0, 0.05, 1, 1])  # add margin at bottom for legend
-        plt.show()
-        self.plot_fr_voltage(title=title, gas_type=gas_type)
-
-    def plot_fr_voltage(self, title: str = None, gas_type: str = 'Xe') -> None:
-        """
-        Plot FR characteristics flow test data vs LPT voltage from the extracted DataFrame.
-        Args:
-            title (str): Optional title for the plot.
-            gas_type (str): Gas type used in the test for labeling.
-        """
-        fig, ax1 = plt.subplots(figsize=(9, 7))
-        l3, = ax1.plot(self.df[FMSFlowTestParameters.LPT_VOLTAGE.value], self.df[FMSFlowTestParameters.TOTAL_FLOW.value], label=f'Total Flow [{self.units[FMSFlowTestParameters.TOTAL_FLOW.value]}]')
-        ax1.set_xlabel('LPT Voltage [mV]')
-        ax1.set_ylabel(f'Mass Flow Rate [{self.units[FMSFlowTestParameters.ANODE_FLOW.value]} {gas_type}]')
-        ax1.grid(True)
-        if title:
-            plt.title(title, wrap=True)
-        ax2 = ax1.twinx()
-        l4, = ax2.plot(self.df[FMSFlowTestParameters.LPT_VOLTAGE.value], self.df['ac_ratio'], color='tab:red', label='Anode/Cathode Ratio')
-        l5, = ax1.plot(self.lpt_voltages, self.min_flow_rates, linestyle='--', color='tab:grey', label='Min Flow Rate')
-        l6, = ax1.plot(self.lpt_voltages, self.max_flow_rates, linestyle='--', color='tab:grey', label='Max Flow Rate')
-        ax2.set_ylabel('Anode-to-Cathode Ratio')
-        ax2.set_ylim(bottom=0, top=20)
-        ax2.set_yticks(np.arange(0, 21, 1))
-
-        if self.intersections.get('intersections', None):
-            intersections = self.intersections["intersections"]
-            for voltage, flow in intersections:
-                ax1.plot(voltage, flow, 'ro') 
-
-        l5_upper = ax2.axhline(self.ratio + 0.5, color='tab:orange', linestyle='--', label=f'Ratio Tolerance: {self.ratio}')
-        l5_lower = ax2.axhline(self.ratio - 0.5, color='tab:orange', linestyle='--', label='Ratio Tolerance')
-
-        actual_slope = self.intersections.get('flow_slope', None)
-        min_slope = get_slope(self.lpt_voltages, self.min_flow_rates)
-        max_slope = get_slope(self.lpt_voltages, self.max_flow_rates)
-
-        if min_slope and max_slope and actual_slope:
-            # Format the message
-            textstr = '\n'.join([
-                'Compare Slopes',
-                f'Min Slope: {min_slope:.3f} [mg/s mV^-1]',
-                f'Max Slope: {max_slope:.3f} [mg/s mV^-1]',
-                f'Actual Slope: {actual_slope:.3f} [mg/s mV^-1] [✓]' if min_slope <= actual_slope <= max_slope else f'Actual Slope: {actual_slope:.3f} [mg/s mV^-1] [✗]'
-            ])
-
-            # Add the text box in an empty corner (top right by default)
-            props = dict(boxstyle='round,pad=0.5', facecolor='lightyellow', edgecolor='red', alpha=0.9)
-            ax1.text(0.05, 0.95, textstr, transform=ax1.transAxes,
-                    fontsize=10, verticalalignment='top', horizontalalignment='left',
-                    bbox=props)
-                            
-        lines = [l3, l4, l5, l6, l5_upper]
-        labels = [line.get_label() for line in lines]
-        # Put legend below the plot instead of on the side
-        ax1.legend(lines, labels, loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-        plt.tight_layout()
-        plt.show()
-
-    def get_flow_power_slope(self, flows: np.ndarray, powers: np.ndarray, num_points: int = 300) -> dict:
-        """
-        Calculate the flow vs power slope in specified regions (1-2 mg/s and 2-4 mg/s).
-        Args:
-            flows (np.ndarray): Array of flow values.
-            powers (np.ndarray): Array of power values.
-            num_points (int): Number of points for smoothing.
-        Returns:
-            dict: Dictionary containing smoothed power and flow arrays, slopes, and intercepts for both regions.
-        """
-        mask = powers > 0.2
-        flows = flows[mask]
-        powers = powers[mask]
-
-        def get_region(flow_vals, power_vals, lower_bound, upper_bound):
-            below_idx = np.where(flow_vals < lower_bound)[0]
-            above_idx = np.where(flow_vals > upper_bound)[0]
-
-            if len(below_idx) == 0:
-                start_idx = 0
-            else:
-                start_idx = below_idx[-1]
-
-            if len(above_idx) == 0:
-                end_idx = len(flow_vals) - 1
-            else:
-                end_idx = above_idx[0]
-
-            return power_vals[start_idx:end_idx + 1], flow_vals[start_idx:end_idx + 1]
-
-        def smooth_and_slope(power_segment: np.ndarray, flow_segment: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
-            if len(power_segment) < 2 or len(flow_segment) < 2:
-                return np.array([]), np.array([]), 0, 0
-
-            interp_func = interp1d(power_segment, flow_segment, kind='linear', fill_value="extrapolate")
-            power_smooth = np.linspace(power_segment.min(), power_segment.max(), num_points)
-            flow_smooth = interp_func(power_smooth)
-
-            model = LinearRegression()
-            model.fit(power_smooth.reshape(-1, 1), flow_smooth)
-            slope = model.coef_[0]
-            intercept = model.intercept_
-
-            return power_smooth, flow_smooth, slope, intercept
-
-        # 1–2 mg/s
-        tv_power_12, total_flows_12 = get_region(flows, powers, 1, 2)
-        tv_power_12_smooth, total_flows_12_smooth, slope12, intercept12 = smooth_and_slope(tv_power_12, total_flows_12)
-
-        # 2–4 mg/s
-        tv_power_24, total_flows_24 = get_region(flows, powers, 2, 4)
-        tv_power_24_smooth, total_flows_24_smooth, slope24, intercept24 = smooth_and_slope(tv_power_24, total_flows_24)
-
-        array_dict = {
-            'tv_power_12': tv_power_12_smooth,
-            'total_flows_12': total_flows_12_smooth,
-            'slope12': slope12,
-            'intercept12': intercept12,
-            'tv_power_24': tv_power_24_smooth,
-            'total_flows_24': total_flows_24_smooth,
-            'slope24': slope24,
-            'intercept24': intercept24
-        }
-
-        return array_dict
-
-    def check_tv_slope(self, tv_power_12: np.ndarray, tv_power_24: np.ndarray, total_flows_12: np.ndarray, \
-                       total_flows_24: np.ndarray, slope12: float, slope24: float, intercept12: float, intercept24: float) -> None:
-        """
-        Plot the flow vs power data along with the calculated slopes and compare against specification ranges.
-        Args:
-            tv_power_12 (np.ndarray): Smoothed TV power values for 1-2 mg/s region.
-            tv_power_24 (np.ndarray): Smoothed TV power values for 2-4 mg/s region.
-            total_flows_12 (np.ndarray): Smoothed flow values for 1-2 mg/s region.
-            total_flows_24 (np.ndarray): Smoothed flow values for 2-4 mg/s region.
-            slope12 (float): Calculated slope for 1-2 mg/s region.
-            slope24 (float): Calculated slope for 2-4 mg/s region.
-            intercept12 (float): Intercept for 1-2 mg/s region.
-            intercept24 (float): Intercept for 2-4 mg/s region.
-        """
-        try:
-            slope_line_12 = slope12 * tv_power_12 + intercept12
-            slope_line_24 = slope24 * tv_power_24 + intercept24
-
-            min_slope12 = self.range12_low[0] if self.inlet_pressure < 100 else self.range12_high[0]
-            max_slope12 = self.range12_low[1] if self.inlet_pressure < 100 else self.range12_high[1]
-            min_slope24 = self.range24_low[0] if self.inlet_pressure < 100 else self.range24_high[0]
-            max_slope24 = self.range24_low[1] if self.inlet_pressure < 100 else self.range24_high[1]
-
-            plt.figure(figsize=(14, 5))
-            plt.subplot(1, 2, 1)
-            plt.plot(tv_power_12, total_flows_12, 'b-', label='1-2 mg/s')
-            plt.plot(tv_power_12, slope_line_12, 'g--', label=f"Slope: {slope12:.2f} mg/s W^-1 [✓]" if min_slope12 <= slope12 <= max_slope12 else f"Slope: {round(slope12)} mg/s W^-1 [✗]")
-            plt.xlabel(f'TV Power [{self.units[FMSFlowTestParameters.AVG_TV_POWER.value]}]')
-            plt.ylabel(f'Total Flow [{self.units[FMSFlowTestParameters.TOTAL_FLOW.value]} {self.gas_type}]')
-            plt.gca().xaxis.set_major_formatter(FormatStrFormatter('%.3f'))
-            textstr = '\n'.join([
-                'Slopes from Spec:',
-                f'Min Slope: {min_slope12} [mg/s W^-1]',
-                f'Max Slope: {max_slope12} [mg/s W^-1]',
-            ])
-            props = dict(boxstyle='round,pad=0.5', facecolor='lightyellow', edgecolor='red', alpha=0.9)
-            plt.text(0.05, 0.95, textstr, transform=plt.gca().transAxes,
-                    fontsize=10, verticalalignment='top', horizontalalignment='left',
-                    bbox=props)
-            plt.title(f'Total Flow vs TV Power (1-2 mg/s)\nTRP temp: {self.temperature} [degC], Inlet Pressure: {self.inlet_pressure} [barA]')
-            plt.legend(loc='lower center', bbox_to_anchor=(0.5, -0.3), ncol=2)
-            plt.grid(True)
-
-            plt.subplot(1, 2, 2)
-            plt.plot(tv_power_24, total_flows_24, 'r-', label='2-4 mg/s')
-            plt.plot(tv_power_24, slope_line_24, 'g--', label=f"Slope: {slope24:.2f} mg/s W^-1 [✓]" if min_slope24 <= slope24 <= max_slope24 else f"Slope: {round(slope24)} mg/s W^-1 [✗]")
-            plt.xlabel(f'TV Power [{self.units[FMSFlowTestParameters.AVG_TV_POWER.value]}]')
-            plt.ylabel(f'Total Flow [{self.units[FMSFlowTestParameters.TOTAL_FLOW.value]} {self.gas_type}]')
-            plt.gca().xaxis.set_major_formatter(FormatStrFormatter('%.3f'))
-            textstr = '\n'.join([
-                'Slopes from Spec:',
-                f'Min Slope: {min_slope24} [mg/s W^-1]',
-                f'Max Slope: {max_slope24} [mg/s W^-1]',
-            ])
-            props = dict(boxstyle='round,pad=0.5', facecolor='lightyellow', edgecolor='red', alpha=0.9)
-            plt.text(0.05, 0.95, textstr, transform=plt.gca().transAxes,
-                    fontsize=10, verticalalignment='top', horizontalalignment='left',
-                    bbox=props)    
-            plt.legend(loc='lower center', bbox_to_anchor=(0.5, -0.3), ncol=2)
-            plt.title(f'Total Flow vs TV Power (2-4 mg/s)\nTRP temp: {self.temperature} [degC], Inlet Pressure: {self.inlet_pressure} [barA]')
-            plt.grid(True)   
-            plt.tight_layout()
-            plt.show()
-        except:
-            traceback.print_exc()
 
     def extract_FMS_test_results(self) -> None:
         """

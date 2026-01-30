@@ -160,11 +160,12 @@ class FMSQuery:
                  max_flow_rates: list[float] = [0.96, 1.61, 1.9, 2.34, 2.93, 3.07, 3.81, 4.54], range12_low: list[float] = [13, 41], range24_low: list[float] = [19, 54],
                  range12_high: list[float] = [25, 95], range24_high: list[float] = [35, 140], initial_flow_rate: float = 0.1, lpt_set_points: list[float] = [1, 1.625, 2.25, 1.625, 1, 0.2]):
         
+        self.fms = FMSDataStructure(local = local)
         if not bool(session):
-            fms = FMSDataStructure(local = local)
-            self.session = fms.Session()
+            self.session = self.fms.Session()
         else:
             self.session = session
+
         self.local = local
         self.lpt_pressures: list[float] = lpt_pressures
         self.lpt_voltages: list[float] = lpt_voltages

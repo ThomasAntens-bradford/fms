@@ -64,9 +64,9 @@ class HPIVQuery:
 
     def __init__(self, session: "Session" = None, local: bool = True, fms_entry: FMSMain = None):
         
+        self.fms = FMSDataStructure(local = local)
         if not bool(session):
-            fms = FMSDataStructure(local = local)
-            self.session = fms.Session()
+            self.session = self.fms.Session()
         else:
             self.session = session
 

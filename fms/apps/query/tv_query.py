@@ -121,11 +121,12 @@ class TVQuery:
     """
 
     def __init__(self, session: "Session" = None, fms_entry: FMSMain = None, local: bool = True):
+        self.fms = FMSDataStructure(local = local)
         if not bool(session):
-            fms = FMSDataStructure(local = local)
-            self.session = fms.Session()
+            self.session = self.fms.Session()
         else:
             self.session = session
+
         self.fms_entry: type[FMSMain] = fms_entry
         self.allocated_certifications = []
         self.tv_test_dict = {}
