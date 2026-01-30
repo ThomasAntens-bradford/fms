@@ -161,6 +161,7 @@ class FMSQuery:
                  range12_high: list[float] = [25, 95], range24_high: list[float] = [35, 140], initial_flow_rate: float = 0.1, lpt_set_points: list[float] = [1, 1.625, 2.25, 1.625, 1, 0.2]):
         
         self.fms = FMSDataStructure(local = local)
+        self.sql = self.fms.fms_sql
         if not bool(session):
             self.session = self.fms.Session()
         else:
@@ -273,7 +274,7 @@ class FMSQuery:
         self.load_all_tests(fms_id)
         return getattr(self, "tvac_tests_list", [])
 
-    def fms_query_field(self):
+    def fms_query_field(self) -> None:
         """
         Create a neat form layout for FMS query selection:
         - FMS ID dropdown
@@ -281,199 +282,322 @@ class FMSQuery:
         - Dynamic second dropdown that updates based on Test Type selection
         - Runs the corresponding function when a dynamic selection is made
         """
-        self.test_dict = {}
+        self.test_dict: dict = {}
 
-        # --- Widgets ---
+        fms_field, query_field, dynamic_field, output = self._create_fms_query_widgets()
+        self._register_fms_query_listeners(
+            fms_field=fms_field,
+            query_field=query_field,
+            dynamic_field=dynamic_field,
+            output=output,
+        )
+
+        form = widgets.VBox(
+            [
+                widgets.HTML("<h3>FMS Query Form</h3>"),
+                fms_field,
+                query_field,
+                dynamic_field,
+                output,
+            ],
+            layout=widgets.Layout(
+                border="1px solid #ccc",
+                padding="12px",
+                width="100%",
+            ),
+        )
+
+        display(form)
+
+        if fms_field.value:
+            self._on_fms_change(
+                change={"type": "change", "name": "value"},
+                fms_field=fms_field,
+                query_field=query_field,
+                dynamic_field=dynamic_field,
+                output=output,
+            )
+
+
+    def _create_fms_query_widgets(
+        self,
+    ) -> tuple[
+        widgets.Dropdown,
+        widgets.Dropdown,
+        widgets.Dropdown,
+        widgets.Output,
+    ]:
         fms_ids: list[str] = [f.fms_id for f in self.session.query(FMSMain).all()]
-        fms_ids = sorted(fms_ids, key=lambda x: (int(x.split('-')[0]), int(x.split('-')[1].zfill(4))), reverse = True)
+        fms_ids = sorted(
+            fms_ids,
+            key=lambda x: (int(x.split("-")[0]), int(x.split("-")[1].zfill(4))),
+            reverse=True,
+        )
 
         fms_field = widgets.Dropdown(
             options=fms_ids,
-            description='FMS ID:',
-            layout=widgets.Layout(width='350px'),
-            style={'description_width': '80px'}
+            description="FMS ID:",
+            layout=widgets.Layout(width="350px"),
+            style={"description_width": "80px"},
         )
 
         query_field = widgets.Dropdown(
-            options=['Status', 'Acceptance Test', 'Slope Test', 'Open Loop Test', 'Closed Loop Test', 'FR Characteristics',
-                    'Tvac Cycle', 'FMS Trend Analysis', 'Part Investigation'],
-            description='Query Type:',
-            layout=widgets.Layout(width='350px'),
-            style={'description_width': '80px'},
-            value='Status'
+            options=[
+                "Status",
+                "Acceptance Test",
+                "Slope Test",
+                "Open Loop Test",
+                "Closed Loop Test",
+                "FR Characteristics",
+                "Tvac Cycle",
+                "FMS Trend Analysis",
+                "Part Investigation",
+            ],
+            description="Query Type:",
+            layout=widgets.Layout(width="350px"),
+            style={"description_width": "80px"},
+            value="Status",
         )
 
         dynamic_field = widgets.Dropdown(
             options=[],
-            description='Select Test:',
-            layout=widgets.Layout(width='350px'),
-            style={'description_width': '80px'}
+            description="Select Test:",
+            layout=widgets.Layout(width="350px"),
+            style={"description_width": "80px"},
         )
 
         output = widgets.Output()
 
-        # --- Helper to display remark + query together ---
-        def display_with_remark(func: callable, test_run: object = None, lookup_table: object = None) -> None:
+        return fms_field, query_field, dynamic_field, output
+
+
+    def _register_fms_query_listeners(
+        self,
+        fms_field: widgets.Dropdown,
+        query_field: widgets.Dropdown,
+        dynamic_field: widgets.Dropdown,
+        output: widgets.Output,
+    ) -> None:
+        fms_field.observe(
+            lambda c: self._on_fms_change(
+                c, fms_field, query_field, dynamic_field, output
+            ),
+            names="value",
+        )
+
+        query_field.observe(
+            lambda c: self._on_query_change(
+                c, query_field, dynamic_field, output
+            ),
+            names="value",
+        )
+
+        dynamic_field.observe(
+            lambda c: self._on_dynamic_change(
+                c, query_field, dynamic_field, output
+            ),
+            names="value",
+        )
+
+
+    def _display_with_remark(
+        self,
+        output: widgets.Output,
+        func: callable,
+        test_run: object | None = None,
+        lookup_table: object | None = None,
+    ) -> None:
+        with output:
+            output.clear_output(wait=True)
+            if test_run is not None:
+                self.fms_test_remark_field(test_run, lookup_table)
+            func()
+
+
+    def _get_dynamic_callable(
+        self,
+        test_type: str,
+        dynamic_field: widgets.Dropdown,
+        output: widgets.Output,
+    ) -> callable:
+        if dynamic_field.value is None and test_type != "Status":
+            return lambda: None
+
+        if test_type == "Status":
+            return lambda: self._display_with_remark(
+                output, lambda: self.fms_status()
+            )
+
+        if test_type == "Acceptance Test":
+            return lambda: self._display_with_remark(
+                output, lambda: self.fms_characteristics_query()
+            )
+
+        if test_type in {"Slope Test", "Open Loop Test"}:
+            test_run = next(
+                i
+                for i in self.fms_entry.functional_tests
+                if i.test_id == dynamic_field.value
+            )
+            return lambda: self._display_with_remark(
+                output,
+                lambda: self.open_loop_test_query(
+                    test_run=test_run,
+                    test_type="slope" if test_type == "Slope Test" else "open_loop",
+                ),
+                test_run,
+                FMSFunctionalTests,
+            )
+
+        if test_type == "Closed Loop Test":
+            test_run = next(
+                i
+                for i in self.fms_entry.functional_tests
+                if i.test_id == self.test_dict.get(dynamic_field.value)
+            )
+            return lambda: self._display_with_remark(
+                output,
+                lambda: self.closed_loop_test_query(test_run=test_run),
+                test_run,
+                FMSFunctionalTests,
+            )
+
+        if test_type == "FR Characteristics":
+            test_run = next(
+                i
+                for i in self.fms_entry.fr_tests
+                if i.test_id == self.test_dict.get(dynamic_field.value)
+            )
+            return lambda: self._display_with_remark(
+                output,
+                lambda: self._plot_fr_results(test_run=test_run),
+                test_run,
+                FMSFRTests,
+            )
+
+        if test_type == "Tvac Cycle":
+            test_run = next(
+                i
+                for i in self.fms_entry.tvac_results
+                if i.test_id == dynamic_field.value
+            )
+            return lambda: self._display_with_remark(
+                output,
+                lambda: self.tvac_cycle_query(dynamic_field.value),
+                test_run,
+                FMSTvac,
+            )
+
+        if test_type == "FMS Trend Analysis":
+            return lambda: self._display_with_remark(
+                output,
+                lambda: self.fms_comparison_query(dynamic_field.value),
+            )
+
+        if test_type == "Part Investigation":
+            return lambda: self._display_with_remark(
+                output,
+                lambda: self.part_investigation_query(dynamic_field.value),
+            )
+
+        return lambda: None
+
+
+    def _on_fms_change(
+        self,
+        change: dict,
+        fms_field: widgets.Dropdown,
+        query_field: widgets.Dropdown,
+        dynamic_field: widgets.Dropdown,
+        output: widgets.Output,
+    ) -> None:
+        if change["type"] != "change" or change["name"] != "value":
+            return
+
+        self.fms_id = fms_field.value
+
+        if not self.fms_entry:
+            with output:
+                output.clear_output()
+                print("The selected FMS does not have any data in the database.")
+            return
+
+        with output:
+            output.clear_output(wait=True)
+            self.fms_status()
+
+        query_field.value = "Status"
+        dynamic_field.options = []
+        dynamic_field.value = None
+
+
+    def _on_query_change(
+        self,
+        change: dict,
+        query_field: widgets.Dropdown,
+        dynamic_field: widgets.Dropdown,
+        output: widgets.Output,
+    ) -> None:
+        self.test_dict = {}
+        dynamic_field.value = None
+
+        if change["type"] != "change" or change["name"] != "value":
+            return
+
+        test_type: str = change["new"]
+
+        if test_type == "Acceptance Test":
             with output:
                 output.clear_output(wait=True)
-                if test_run is not None:
-                    self.fms_test_remark_field(test_run, lookup_table)
-                func()
+                self.fms_characteristics_query()
+            dynamic_field.options = []
+            return
 
-        # --- Map test type to callable ---
-        def get_dynamic_callable(test_type: str) -> callable:
-            if dynamic_field.value is None and test_type != 'Status':
-                return lambda: None
+        if test_type == "Open Loop Test":
+            filtered = self.get_open_loop_tests(self.fms_id)
 
-            if test_type == 'Status':
-                return lambda: display_with_remark(lambda: self.fms_status())
-            
-            elif test_type == "Acceptance Test":
-                return lambda: display_with_remark(lambda: self.fms_characteristics_query())
-            
-            elif test_type == 'Slope Test':
-                test_run = next(i for i in self.fms_entry.functional_tests if i.test_id == dynamic_field.value)
-                return lambda: display_with_remark(
-                    lambda: self.open_loop_test_query(test_run = test_run, test_type='slope'),
-                    test_run, FMSFunctionalTests
+        elif test_type == "Slope Test":
+            filtered = self.get_slope_tests(self.fms_id)
+
+        elif test_type == "Closed Loop Test":
+            filtered = self.get_closed_loop_tests(self.fms_id)
+
+        elif test_type == "FR Characteristics":
+            filtered = self.get_fr_tests(self.fms_id)
+
+        else:
+            filtered = []
+
+        if filtered:
+            dynamic_field.options = [
+                (
+                    f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]",
+                    i.test_id,
                 )
+                for i in filtered
+            ]
+            dynamic_field.description = "Select Test:"
+        else:
+            dynamic_field.options = []
+            dynamic_field.description = f"No {test_type} Found"
 
-            elif test_type == 'Open Loop Test':
-                test_run = next(i for i in self.fms_entry.functional_tests if i.test_id == dynamic_field.value)
-                return lambda: display_with_remark(
-                    lambda: self.open_loop_test_query(test_run = test_run, test_type='open_loop'),
-                    test_run, FMSFunctionalTests
-                )
 
-            elif test_type == 'Closed Loop Test':
-                test_run = next(i for i in self.fms_entry.functional_tests if i.test_id == self.test_dict.get(dynamic_field.value))
-                return lambda: display_with_remark(
-                    lambda: self.closed_loop_test_query(test_run = test_run),
-                    test_run, FMSFunctionalTests
-                )
+    def _on_dynamic_change(
+        self,
+        change: dict,
+        query_field: widgets.Dropdown,
+        dynamic_field: widgets.Dropdown,
+        output: widgets.Output,
+    ) -> None:
+        if change["type"] != "change" or change["name"] != "value":
+            return
 
-            elif test_type == 'FR Characteristics':
-                test_run = next(i for i in self.fms_entry.fr_tests if i.test_id == self.test_dict.get(dynamic_field.value))
-                return lambda: display_with_remark(
-                    lambda: self._plot_fr_results(test_run = test_run),
-                    test_run, FMSFRTests
-                )
-
-            elif test_type == 'Tvac Cycle':
-                test_run = next(i for i in self.fms_entry.tvac_results if i.test_id == dynamic_field.value)
-                return lambda: display_with_remark(
-                    lambda: self.tvac_cycle_query(dynamic_field.value),
-                    test_run, FMSTvac
-                )
-
-            elif test_type == 'FMS Trend Analysis':
-                return lambda: display_with_remark(lambda: self.fms_comparison_query(dynamic_field.value))
-
-            elif test_type == 'Part Investigation':
-                return lambda: display_with_remark(lambda: self.part_investigation_query(dynamic_field.value))
-
-            else:
-                return lambda: None
-
-        # --- Listeners ---
-        def on_fms_change(change: dict) -> None:
-            if change['type'] == 'change' and change['name'] == 'value':
-                self.fms_id = fms_field.value
-                if not self.fms_entry:
-                    with output:
-                        output.clear_output()
-                        print("The selected FMS does not have any data in the database.")
-                        return
-                with output:
-                    output.clear_output(wait=True)
-                    self.fms_status()
-                query_field.value = 'Status'
-                dynamic_field.options = []
-                dynamic_field.value = None
-
-        fms_field.observe(on_fms_change, names='value')
-
-        def on_query_change(change: dict) -> None:
-            self.test_dict = {}
-            dynamic_field.value = None
-            if change['type'] == 'change' and change['name'] == 'value':
-                test_type = change['new']
-
-                if test_type == 'Open Loop Test':
-                    filtered = self.get_open_loop_tests(self.fms_id)
-                    test_headers = [(f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]", i.test_id) for i in filtered]
-                    dynamic_field.options = test_headers
-                    dynamic_field.description = "Select Test:" if filtered else "No Open Loop Tests Found"
-
-                elif test_type == "Acceptance Test":
-                    dynamic_field.options = []
-                    dynamic_field.value = None
-                    with output:
-                        output.clear_output(wait=True)
-                        self.fms_characteristics_query()
-
-                elif test_type == 'Slope Test':
-                    filtered = self.get_slope_tests(self.fms_id)
-                    test_headers = [(f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]", i.test_id) for i in filtered]
-                    dynamic_field.options = test_headers
-                    dynamic_field.description = "Select Test:" if filtered else "No Slope Tests Found"
-
-                elif test_type == 'Closed Loop Test':
-                    filtered = self.get_closed_loop_tests(self.fms_id)
-                    test_headers = [(f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]", i.test_id) for i in filtered]
-                    dynamic_field.options = test_headers
-                    dynamic_field.description = "Select Test:" if filtered else "No Closed Loop Tests Found"
-
-                elif test_type == 'FR Characteristics':
-                    filtered = self.get_fr_tests(self.fms_id)
-                    test_headers = [(f"{i.test_id[:10]} {i.trp_temp} [degC] {i.inlet_pressure} [barA]", i.test_id) for i in filtered]
-                    dynamic_field.options = test_headers
-                    dynamic_field.description = "Select Test:" if filtered else "No FR Tests Found"
-
-                elif test_type == 'Tvac Cycle':
-                    self.get_tvac_tests(self.fms_id)
-                    try:
-                        dynamic_field.options = [[t.test_id for t in self.tvac_tests_list][0]]
-                    except:
-                        dynamic_field.options = []
-                        dynamic_field.description = "No TVAC Tests"
-                    dynamic_field.description = "Select Test:" if self.tvac_tests_list else "No Tvac Tests Found"
-
-                elif test_type == 'Part Investigation':
-                    dynamic_field.options = [" ".join([j.capitalize() for j in i.value.split(" ")]) if i != FMSParts.HPIV else i.value.upper() for i in FMSParts]
-                    dynamic_field.description = "Select Part:"
-
-                elif test_type == 'FMS Trend Analysis':
-                    dynamic_field.options = ['TV Slope Analysis', 'Flow Rate Analysis', 'Closed Loop Analysis', 'FR Match Analysis', 'Free Choice']
-                    dynamic_field.description = "Analysis Type:"
-
-                else:  # Status
-                    dynamic_field.options = []
-                    get_dynamic_callable('Status')()
-
-        query_field.observe(on_query_change, names='value')
-
-        def on_dynamic_change(change: dict) -> None:
-            if change['type'] == 'change' and change['name'] == 'value':
-                func = get_dynamic_callable(query_field.value)
-                func()
-
-        dynamic_field.observe(on_dynamic_change, names='value')
-
-        # --- Layout ---
-        form = widgets.VBox([
-            widgets.HTML("<h3>FMS Query Form</h3>"),
-            fms_field,
-            query_field,
+        func = self._get_dynamic_callable(
+            query_field.value,
             dynamic_field,
-            output
-        ], layout=widgets.Layout(border='1px solid #ccc', padding='12px', width='100%'))
-
-        display(form)
-
-        # --- Run default status ---
-        if fms_field.value:
-            on_fms_change(change = {"type": "change", "name": "value"})
+            output,
+        )
+        func()
 
     def fms_status(self) -> None:
         """

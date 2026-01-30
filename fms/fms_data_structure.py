@@ -335,277 +335,6 @@ class FMSDataStructure:
             self.fr_sql.update_fr_test_results(self.excel_extraction, anode_path=anode_fr_path, cathode_path=cathode_fr_path,\
                                                 tools_path = os.path.join(self.absolute_data_dir, "useful_data", "trs_tools_fr.json"))
 
-    def get_all_certifications(self, local_certifications: str = "") -> None:
-        """
-        Process all certification documents and update the database accordingly.
-        This method scans the certifications directory for PDF files,
-        extracts relevant information using Textract, and updates the
-        database with the extracted data.
-        Args:
-            local_certifications (str): Path to the local directory containing certifications
-        """
-        if not local_certifications:
-            local_certifications = self.default_certifications_path
-
-        relevant_amazon_certifications = [
-            "C24-0766","C24-0767","C25-0033","C25-0040","C25-0044",
-            "C25-0088","C25-0110","C25-0115","C25-0135","C25-0134",
-            "C25-0138","C25-0172","C25-0554","C25-0624","C25-0262",
-            "C25-0226","C25-0260","C25-0227","C25-0352","C25-0352",
-            "C25-0353","C25-0380","C25-0164", "C25-0165", "C25-0081",
-            "C25-0082", "C25-0638", "C25-0637", "C25-0555", "C25-0486",
-            "C25-0448", "C25-0380", "C25-0353", "C25-0352", "C25-0260","C25-0226",
-            "C25-0178", "C25-0343","C25-0670", "C25-0672", "C25-0686", "C25-0763", "C25-0799",
-            "C25-0798", "C25-0939", "C25-0978", "C25-1041"
-        ]
-
-        restrictor_certifications = [
-            "C25-0053","C25-0054","C25-0055","C25-0332","C25-0333","C24-0089","C24-0090",
-            "C24-0370","C24-0371","C24-0204","C25-0412","C25-0413", "C25-1033", "C25-1034"
-        ]
-
-        outlet_certifications = [
-            "C25-0066", "C25-0046"
-        ]
-
-        hpiv_certifications = [
-            "C25-0016", "C25-0143", "C25-0347", "C24-0724", "C24-0192"
-        ]
-
-        lpt_assembly_cert = ["C25-0261", "C25-0259", "C25-0487", "C25-0470", "C25-0699", "C25-1046"]
-
-        lpt_cert = ["C24-0111", "C24-0112", "C25-0154"]
-
-        restrictor_ocr = load_from_json("restrictor_ocr_certifications")
-        lpt_ocr = load_from_json("lpt_ocr_certifications")
-        manifold_ocr = load_from_json("manifold_ocr_certifications")
-        outlet_ocr = load_from_json("outlet_ocr_certifications")
-        filter_ocr = load_from_json("filter_ocr_certifications")
-        amazon_certs = load_from_json("certifications_text")
-
-        amazon_keys = [k.split("/")[-1] for k in amazon_certs.keys()]
-        total_processed_certs = list(set(amazon_keys + list(restrictor_ocr.keys()) + list(lpt_ocr.keys()) + \
-                                         list(manifold_ocr.keys()) + list(outlet_ocr.keys()) + list(filter_ocr.keys())))
-        #Test C25-0033
-        cert_files = []
-
-        for folder in [self.certification_folder, local_certifications]:
-            cert_files.extend([
-                os.path.join(folder, f)
-                for f in os.listdir(folder)
-                if f.lower().endswith('.pdf')
-            ])
-
-        cert_files = [f for f in cert_files if any(company in f.lower() for company in self.companies)]
-
-        unique_files = {}
-        for f in cert_files:
-            base = os.path.basename(f)
-            if base not in unique_files or f.startswith(local_certifications):
-                unique_files[base] = f
-
-        self.all_current_certifications = list(unique_files.values())
-        # self.all_current_certifications = [f for f in self.all_current_certifications if "C25-0763" in f]
-        # print(self.all_current_certifications)
-        # total_cost = self.estimate_amazon_invoice_total_cost(self.all_current_certifications)
-        # print(total_cost): $6.91
-        # Check manifold!
-
-        # Initialize progress bar for all files
-        with tqdm(total=len(self.all_current_certifications), desc="Processing PDFs") as pbar:
-            for file in self.all_current_certifications:
-                match = re.search(r'C\d{2}-\d{4}', os.path.basename(file))
-                for obj in self.obj_list:
-                    obj.pdf_file = file
-
-                certification = match.group(0) if match else ""
-
-                tqdm.write(f"Processing: {certification}")
-                company = next((c for c in self.companies if c in file.lower()), None)
-
-                if not any(certification in cert for cert in total_processed_certs) and not certification in \
-                    ["C25-0939", "C25-0799", "C25-0798", "C25-0699", "C25-0670", "C25-0672", "C25-0686", "C24-0187", \
-                     "C25-0146", "C25-0156", "C25-0087", "C25-0036", "C25-0763", "C25-0978"]:
-                    tqdm.write(f"Skipping: {certification}")
-                    continue
-
-                if certification == "C24-0187":
-                    self.fr_data.extracted_fr_parts = {
-                        'restrictor outlet':
-                        {
-                            "amount": 19,
-                            "drawing": "20025.10.21-R5",
-                            "certification": certification
-                        }
-                    }
-                    self.fr_data.certification = certification
-                    self.fr_sql.update_fr_certification(self.fr_data)
-                    self.fr_data.extracted_fr_parts = {}
-                    self.fr_data.certification = None
-                elif certification == "C25-0146":
-                    self.manifold_data.extracted_manifold_parts = {
-                        "lpt assembly": {"8": {
-                            "certification": certification,
-                            "ratio": 13,
-                            "drawing": "20025.10.AB-R4"
-                        }}
-                    }
-                    self.manifold_data.certification = certification
-                    self.lpt_sql.update_manifold_certification(self.manifold_data)
-                    self.manifold_data.extracted_manifold_parts = {}
-                    self.manifold_data.certification = None
-                elif certification == "C25-0156":
-                    self.manifold_data.extracted_manifold_parts = {
-                        "lpt assembly": {"9": {
-                            "certification": certification,
-                            "ratio": 13,
-                            "drawing": "20025.10.AB-R4"
-                        },
-                        "10": {
-                            "certification": certification,
-                            "ratio": 13,
-                            "drawing": "20025.10.AB-R4"
-                        }
-                    }
-                    }
-                    self.manifold_data.certification = certification
-                    self.lpt_sql.update_manifold_certification(self.manifold_data)
-                    self.manifold_data.extracted_manifold_parts = {}
-                    self.manifold_data.certification = None
-
-                # elif certification == 'C25-0066':
-                #     self.fr_data.extracted_fr_parts = {'restrictor outlet': {'amount': 30, 'certification': 'C25-0066', 'drawing': '20025.10.21-R5'}}
-                #     self.fr_sql.update_fr_certification(self.fr_data)
-                #     self.fr_data.extracted_fr_parts = {}
-
-                elif certification == "C25-0087":
-                    self.manifold_data.extracted_manifold_parts = {
-                        "manifold": {
-                            "amount": 45,
-                            "drawing": self.default_manifold_drawing,
-                            'certification': certification
-                        }
-                    }
-                    self.lpt_sql.update_manifold_certification(self.manifold_data)
-                    self.manifold_data.extracted_manifold_parts = {}
-
-                elif certification == "C25-0036":
-                    self.manifold_data.extracted_manifold_parts = {
-                        "manifold": {
-                            "amount": 2,
-                            "drawing": self.default_manifold_drawing.replace("R4", "R3"),
-                            'certification': certification
-                        }
-                    }
-                    self.lpt_sql.update_manifold_certification(self.manifold_data)
-                    self.manifold_data.extracted_manifold_parts = {}
-
-                elif certification in outlet_certifications:
-                    reader = TextractReader(pdf_file=file, bucket_folder="Certifications", company=company)
-                    total_lines = reader.get_text()
-                    self.fr_data.get_certification(total_lines)
-                    self.fr_sql.update_fr_certification(self.fr_data)
-                    self.fr_data.extracted_fr_parts = {}
-
-                elif certification in lpt_assembly_cert:
-                    reader = TextractReader(pdf_file=file, bucket_folder="Certifications", company=company)
-                    total_lines = reader.get_text()
-                    self.manifold_data.get_assembly_certification(total_lines)
-                    self.lpt_sql.update_manifold_certification(self.manifold_data)
-                    self.manifold_data.extracted_manifold_parts = {}
-
-                elif certification in lpt_cert:
-                    reader = TextractReader(pdf_file=file, bucket_folder="Certifications", company=company)
-                    total_lines = reader.get_text()
-                    self.manifold_data.get_lpt_certification(total_lines)
-                    self.lpt_sql.update_lpt_certification(self.manifold_data)
-                    self.manifold_data.extracted_lpt_serials = []
-
-                elif certification in hpiv_certifications:
-                    reader = TextractReader(pdf_file=file, bucket_folder="Certifications", company=company)
-                    total_lines = reader.get_text()
-                    self.hpiv_data.get_certification(total_lines)
-                    self.hpiv_sql.update_hpiv_certifications(self.hpiv_data)
-                    self.hpiv_data.hpiv_ids = []
-
-                elif certification in restrictor_certifications:
-                    reader = TextractReader(pdf_file=file, bucket_folder="Certifications", company=company)
-                    total_lines = reader.get_text()
-                    self.fr_data.get_certification(total_lines)       
-                    self.fr_sql.update_fr_certification(self.fr_data)
-                    self.fr_data.extracted_fr_parts = {}             
-                    tqdm.write(f"Amazon certification processed: {certification}")
-
-                elif certification in relevant_amazon_certifications:
-                    reader = TextractReader(pdf_file=file, bucket_folder="Certifications", company=company)
-                    total_lines = reader.get_text()
-                    self.tv_data.get_certification(total_lines)
-                    self.tv_sql.update_tv_certification(self.tv_data)
-                    self.tv_data.extracted_tv_parts = {}
-                    tqdm.write(f"Amazon certification processed: {certification}")
-                else:
-                    # Worker definitions
-                    def lpt_worker():
-                        if not certification in lpt_assembly_cert:
-                            self.manifold_data.get_ocr_certification()
-                            self.manifold_data.get_manifold_ocr_certification()
-                            if self.manifold_data.extracted_lpt_serials:
-                                self.manifold_data.certification = certification
-                                self.lpt_sql.update_lpt_certification(self.manifold_data)
-                                self.manifold_data.extracted_lpt_serials = []
-                                self.manifold_data.certification = None
-                                tqdm.write("LPT data found and updated.")
-                            elif self.manifold_data.extracted_manifold_parts:
-                                self.manifold_data.certification = certification
-                                self.lpt_sql.update_manifold_certification(self.manifold_data)
-                                self.manifold_data.extracted_manifold_parts = {}
-                                self.manifold_data.certification = None
-                                tqdm.write("Manifold data found and updated.")
-
-                    # def fr_worker():
-                    #     if company in ["sk technology", "sk", "ejay filtration"]:
-                    #         self.fr_data.get_ocr_certification()
-                    #         if self.fr_data.extracted_fr_parts:
-                    #             self.fr_sql.update_fr_certification(self.fr_data)
-                    #             self.fr_data.extracted_fr_parts = {}
-                    #             tqdm.write("FR data found and updated.")
-
-                    # def fr_outlet_worker():
-                    #     if company in ["sk technology", "sk"]:
-                    #         self.fr_data.get_outlet_certification()
-                    #         if self.fr_data.extracted_fr_parts:
-                    #             self.fr_sql.update_fr_certification(self.fr_data)
-                    #             self.fr_data.extracted_fr_parts = {}
-                    #             tqdm.write("FR outlet data found and updated.")
-
-                    def fr_filter_worker():
-                        if company in "ejay filtration":
-                            self.fr_data.get_filter_certification()
-                            if self.fr_data.extracted_fr_parts:
-                                self.fr_data.certification = certification
-                                self.fr_sql.update_fr_certification(self.fr_data)
-                                self.fr_data.extracted_fr_parts = {}
-                                self.fr_data.certification = None
-                                tqdm.write("FR filter data found and updated.")
-
-                    threads = [
-                        threading.Thread(target=lpt_worker, daemon=True),
-                        # threading.Thread(target=fr_worker, daemon=True),
-                        # threading.Thread(target=fr_outlet_worker, daemon=True),
-                        threading.Thread(target=fr_filter_worker, daemon=True)
-                    ]
-
-                    # Start threads
-                    for idx,t in enumerate(threads):
-                        tqdm.write(f"Starting thread {idx}")
-                        t.start()
-
-                    # Wait for all threads to finish
-                    for idx,t in enumerate(threads):
-                        t.join()
-
-                # Update the progress bar for this file
-                pbar.update(1)
 
     def add_tv_test_results(self, tv_test_path: str = "") -> None:
         """
@@ -892,39 +621,76 @@ class FMSDataStructure:
             test_path (str): Path to the directory containing FMS functional test results.
             fms_id (str): Specific FMS ID to process. If empty, process all.
         """
-        slope_files = {}
-        closed_loop_files = {}
-        fr_files = {}
-        tvac_files = {}
-        open_loop_files = {}
-
         if not test_path:
             test_path = self.test_path
 
-        serials = fms_ids if fms_ids else ["24-100", "24-101", "24-102", "24-188", "24-189", "24-190"] + [
-            f"25-{i:03d}" for i in range(45, 65)
-        ]
+        serials: list[str] = (
+            fms_ids
+            if fms_ids
+            else ["24-100", "24-101", "24-102", "24-188", "24-189", "24-190"]
+            + [f"25-{i:03d}" for i in range(45, 65)]
+        )
 
-        def all_matches(path: str, keyword: str, extension: str = None, folder_only: bool = False) -> list[str]:
-            if path is None or not os.path.exists(path):
-                return []
-            matches = []
-            for entry in os.listdir(path):
-                full_path = os.path.join(path, entry)
-                if folder_only and not os.path.isdir(full_path):
-                    continue
-                if keyword.lower() in entry.lower():
-                    if extension and not entry.lower().endswith(extension.lower()):
-                        continue
-                    matches.append(full_path)
-            return matches
+        (
+            slope_files,
+            closed_loop_files,
+            fr_files,
+            tvac_files,
+            open_loop_files,
+        ) = self._scan_fms_test_directories(test_path, serials)
 
-        for f in os.listdir(test_path):
-            full_f_path = os.path.join(test_path, f)
+        session: "Session" = self.Session()
+
+        for serial in serials:
+            fms_check = session.query(FMSMain).filter_by(fms_id=serial).first()
+            gas_type: str = fms_check.gas_type if fms_check else "Xe"
+
+            fms_sql: FMSLogicSQL = FMSLogicSQL(session=session, fms=self, fms_id = serial)
+
+            self._process_flow_tests(
+                fms_sql,
+                gas_type,
+                slope_files.get(serial, []),
+                open_loop_files.get(serial, []),
+                closed_loop_files.get(serial, []),
+            )
+
+            self._process_fr_tests(
+                fms_sql,
+                gas_type,
+                fr_files.get(serial, []),
+            )
+
+            self._process_tvac_tests(
+                fms_sql,
+                gas_type,
+                serial,
+                tvac_files.get(serial, []),
+            )
+
+    def _scan_fms_test_directories(
+        self,
+        test_path: str,
+        serials: list[str],
+    ) -> tuple[
+        dict[str, list[str]],
+        dict[str, list[str]],
+        dict[str, list[str]],
+        dict[str, list[str]],
+        dict[str, list[str]],
+    ]:
+        slope_files: dict[str, list[str]] = {}
+        closed_loop_files: dict[str, list[str]] = {}
+        fr_files: dict[str, list[str]] = {}
+        tvac_files: dict[str, list[str]] = {}
+        open_loop_files: dict[str, list[str]] = {}
+
+        for folder in os.listdir(test_path):
+            full_f_path: str = os.path.join(test_path, folder)
             if not os.path.isdir(full_f_path):
                 continue
 
-            serial = next((s for s in serials if s in f), None)
+            serial: str | None = next((s for s in serials if s in folder), None)
             if not serial:
                 continue
 
@@ -934,96 +700,165 @@ class FMSDataStructure:
             tvac_files[serial] = []
             open_loop_files[serial] = []
 
-            functional_folder = next(iter(all_matches(full_f_path, "function", folder_only=True)), None)
-            low_folder = next(iter(all_matches(functional_folder, "10 bara", folder_only=True)), None)
-            high_folder = next(iter(all_matches(functional_folder, "190 bara", folder_only=True)), None)
+            functional_folder = self._first_match(full_f_path, "function", folder_only=True)
+            low_folder = self._first_match(functional_folder, "10 bara", folder_only=True)
+            high_folder = self._first_match(functional_folder, "190 bara", folder_only=True)
 
-            def add_files(target_list, folder, keywords, ext=".xls"):
-                if not folder:
-                    return
-                for kw in keywords:
-                    target_list.extend(all_matches(folder, kw, extension=ext))
+            self._add_files(slope_files[serial], low_folder, ["slope"])
+            self._add_files(closed_loop_files[serial], low_folder, ["closed loop"])
+            self._add_files(fr_files[serial], low_folder, ["fr", "characteristics", "fr_test"])
 
-            add_files(slope_files[serial], low_folder, ["slope"])
-            add_files(closed_loop_files[serial], low_folder, ["closed loop"])
-            add_files(fr_files[serial], low_folder, ["fr", "characteristics", "fr_test"])
+            self._add_files(slope_files[serial], high_folder, ["slope"])
+            self._add_files(closed_loop_files[serial], high_folder, ["closed loop"])
+            self._add_files(fr_files[serial], high_folder, ["fr", "characteristics", "fr_test"])
 
-            add_files(slope_files[serial], high_folder, ["slope"])
-            add_files(closed_loop_files[serial], high_folder, ["closed loop"])
-            add_files(fr_files[serial], high_folder, ["fr", "characteristics", "fr_test"])
-
-            tvac_folder = next(iter(all_matches(full_f_path, "tvac", folder_only=True)), None)
+            tvac_folder = self._first_match(full_f_path, "tvac", folder_only=True)
             if not tvac_folder:
                 continue
 
-            tvac_cycle_folder = next(iter(all_matches(tvac_folder, "cycl", folder_only=True)), None)
+            tvac_cycle_folder = self._first_match(tvac_folder, "cycl", folder_only=True)
             if tvac_cycle_folder:
                 tvac_files[serial].extend(
-                    os.path.join(tvac_cycle_folder, i)
-                    for i in os.listdir(tvac_cycle_folder)
-                    if i.lower().endswith(".csv")
+                    os.path.join(tvac_cycle_folder, f)
+                    for f in os.listdir(tvac_cycle_folder)
+                    if f.lower().endswith(".csv")
                 )
 
-            temp_conditions = ["-15 degC", "22 degC", "70 degC"]
-            pressures = ["10 bara", "190 bara"]
+            temp_conditions: list[str] = ["-15 degC", "22 degC", "70 degC"]
+            pressures: list[str] = ["10 bara", "190 bara"]
 
             for temp in temp_conditions:
-                temp_folders = all_matches(tvac_folder, temp, folder_only=True)
-                for temp_folder in temp_folders:
-                    func_folders = all_matches(temp_folder, "function", folder_only=True)
-                    for func_folder in func_folders:
+                for temp_folder in self._all_matches(tvac_folder, temp, folder_only=True):
+                    for func_folder in self._all_matches(temp_folder, "function", folder_only=True):
                         for pressure in pressures:
-                            pressure_folders = all_matches(func_folder, pressure, folder_only=True)
-                            for pressure_folder in pressure_folders:
-                                add_files(slope_files[serial], pressure_folder, ["slope"])
-                                add_files(closed_loop_files[serial], pressure_folder, ["closed loop"])
-                                add_files(open_loop_files[serial], pressure_folder, ["open loop"])
+                            for pressure_folder in self._all_matches(
+                                func_folder, pressure, folder_only=True
+                            ):
+                                self._add_files(slope_files[serial], pressure_folder, ["slope"])
+                                self._add_files(
+                                    closed_loop_files[serial],
+                                    pressure_folder,
+                                    ["closed loop"],
+                                )
+                                self._add_files(
+                                    open_loop_files[serial],
+                                    pressure_folder,
+                                    ["open loop"],
+                                )
+
+        return (
+            slope_files,
+            closed_loop_files,
+            fr_files,
+            tvac_files,
+            open_loop_files,
+        )
 
 
-        session = self.Session()
-        for serial in serials:
-            fms_check = session.query(FMSMain).filter_by(fms_id=serial).first()
-            gas_type = fms_check.gas_type if fms_check else "Xe"
+    def _all_matches(
+        self,
+        path: str | None,
+        keyword: str,
+        extension: str | None = None,
+        folder_only: bool = False,
+    ) -> list[str]:
+        if not path or not os.path.exists(path):
+            return []
 
-            slope = slope_files.get(serial, [])
-            closed_loop = closed_loop_files.get(serial, [])
-            fr = fr_files.get(serial, [])
-            tvac = tvac_files.get(serial, [])
+        matches: list[str] = []
+        for entry in os.listdir(path):
+            full_path: str = os.path.join(path, entry)
+            if folder_only and not os.path.isdir(full_path):
+                continue
+            if keyword.lower() in entry.lower():
+                if extension and not entry.lower().endswith(extension.lower()):
+                    continue
+                matches.append(full_path)
+        return matches
 
-            fms_sql = FMSLogicSQL(session=session, fms=self)
-            fms_sql.selected_fms_id = serial
-            for slope_test in slope:
-                print(slope_test)
-                fms_data = FMSData(test_type="slope", flow_test_file=slope_test)
-                fms_data.extract_slope_data()
-                fms_data.gas_type = gas_type
-                fms_sql.update_flow_test_results(fms_data)
 
-            # for open_loop_test in open_loop_files.get(serial, []):
-            #     fms_data = FMSData(test_type="open_loop", flow_test_file=open_loop_test)
-            #     fms_data.extract_slope_data()
-            #     fms_data.gas_type = gas_type
-            #     fms_sql.update_flow_test_results(fms_data)
+    def _first_match(
+        self,
+        path: str | None,
+        keyword: str,
+        folder_only: bool = False,
+    ) -> str | None:
+        matches = self._all_matches(path, keyword, folder_only=folder_only)
+        return next(iter(matches), None)
 
-            # for closed_loop_test in closed_loop:
-            #     fms_data = FMSData(test_type="closed_loop", flow_test_file=closed_loop_test)
-            #     fms_data.extract_slope_data()
-            #     fms_data.gas_type = gas_type
-            #     fms_sql.update_flow_test_results(fms_data)
 
-            # for fr_test in fr:
-            #     fms_data = FMSData(test_type="fr_characteristics", flow_test_file=fr_test)
-            #     fms_data.extract_slope_data()
-            #     fms_data.gas_type = gas_type
-            #     fms_sql.update_fr_characteristics_results(fms_data)
+    def _add_files(
+        self,
+        target_list: list[str],
+        folder: str | None,
+        keywords: list[str],
+        ext: str = ".xls",
+    ) -> None:
+        if not folder:
+            return
+        for kw in keywords:
+            target_list.extend(self._all_matches(folder, kw, extension=ext))
 
-            # if tvac:
-            #     print(serial)
-            #     fms_data = FMSData(test_type="tvac_cycle", flow_test_file=None)
-            #     fms_data.csv_files = tvac
-            #     fms_data.extract_tvac_from_csv()
-            #     fms_data.gas_type = gas_type
-            #     fms_sql.update_tvac_cycle_results(fms_data)   
+
+    def _process_flow_tests(
+        self,
+        fms_sql: "FMSLogicSQL",
+        gas_type: str,
+        slope: list[str],
+        open_loop: list[str],
+        closed_loop: list[str],
+    ) -> None:
+        for slope_test in slope:
+            print(slope_test)
+            fms_sql.flow_test_file = slope_test
+            fms_sql.gas_type = gas_type
+            fms_sql.extract_flow_data()
+            fms_sql.update_flow_test_results(test_type = "slope")
+
+        for open_loop_test in open_loop:
+            print(open_loop_test)
+            fms_sql.gas_type = gas_type
+            fms_sql.extract_flow_data()
+            fms_sql.update_flow_test_results(test_type = "open_loop")
+
+        for closed_loop_test in closed_loop:
+            print(closed_loop_test)
+            fms_sql.gas_type = gas_type
+            fms_sql.extract_flow_data()
+            fms_sql.update_flow_test_results(test_type = "closed_loop")
+
+    def _process_fr_tests(
+        self,
+        fms_sql: "FMSLogicSQL",
+        gas_type: str,
+        fr_tests: list[str],
+    ) -> None:
+        for fr_test in fr_tests:
+            fms_data = FMSData(
+                test_type="fr_characteristics",
+                flow_test_file=fr_test,
+            )
+            fms_data.extract_slope_data()
+            fms_data.gas_type = gas_type
+            fms_sql.update_fr_characteristics_results(fms_data)
+
+
+    def _process_tvac_tests(
+        self,
+        fms_sql: "FMSLogicSQL",
+        gas_type: str,
+        serial: str,
+        tvac_files: list[str],
+    ) -> None:
+        if not tvac_files:
+            return
+
+        print(serial)
+        fms_data = FMSData(test_type="tvac_cycle", flow_test_file=None)
+        fms_data.csv_files = tvac_files
+        fms_data.extract_tvac_from_csv()
+        fms_data.gas_type = gas_type
+        fms_sql.update_tvac_cycle_results(fms_data)
 
     def print_table(self, table_class: object, limit: int = None) -> None:
         """

@@ -23,10 +23,13 @@ class DataParts(Enum):
     TV_TVAC = auto()
     MISC = auto()
 
-def collect_certification_data(fms_data: FMSDataStructure, certifications_path: str, data_parts: DataParts = DataParts.ALL) -> None:
-    if data_parts == DataParts.ALL or data_parts == DataParts.CERTIFICATIONS:
-        print("Getting Certifications")
-        fms_data.get_all_certifications(local_certifications=certifications_path)
+# Get all certifications will be deprecated once the ExactSQL class is fully implemented, and is able to replace the level of traceability 
+# this function offers.
+
+# def collect_certification_data(fms_data: FMSDataStructure, certifications_path: str, data_parts: DataParts = DataParts.ALL) -> None:
+#     if data_parts == DataParts.ALL or data_parts == DataParts.CERTIFICATIONS:
+#         print("Getting Certifications")
+#         fms_data.get_all_certifications(local_certifications=certifications_path)
 
 def collect_tv_data(fms_data: FMSDataStructure, tv_assembly: str, tv_summary: str,
                     status_file: str, electrical_data: str, tv_test_path: str, data_parts: DataParts = DataParts.ALL) -> None:

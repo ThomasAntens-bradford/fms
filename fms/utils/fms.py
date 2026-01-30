@@ -283,7 +283,6 @@ class FMSData:
         self.temperature_type = None
         self.flow_power_slope = {}
         self.inlet_pressure = None
-        self.selected_fms_id = None
         self.outlet_pressure = None
         self.intersections = {}
         self.units = None
@@ -2102,11 +2101,12 @@ class FMSLogicSQL(FMSData, FMSListener):
             Updates the FMSLimits table with specified limits for the parameters of the FMS in acceptance testing.
     """
 
-    def __init__(self, session: "Session", fms: "FMSDataStructure"):
+    def __init__(self, session: "Session", fms: "FMSDataStructure", fms_id: str = ""):
         super().__init__()
         self.Session = session
         self.fms = fms
-        self.fms_id = None
+        self.fms_id = fms_id
+        self.gas_type: str = "Xe"
 
     def listen_for_fms_acceptance_reports(self, data_folder: str = 'FMS_data') -> None:
         """
@@ -2207,6 +2207,8 @@ class FMSLogicSQL(FMSData, FMSListener):
             else:
                 print("Either provide the flow test file and optionally the test type or use the 'listen_to_functional_tests' method to extract the flow test results.")
                 return
+        if test_type:
+            self.test_type = test_type
         try:
             session = self._get_session()
 
@@ -2214,7 +2216,7 @@ class FMSLogicSQL(FMSData, FMSListener):
 
             self._prepare_flow_power_slope_data()
 
-            if self.functional_test_results and self.selected_fms_id:
+            if self.functional_test_results and self.fms_id:
                 self._update_or_create_functional_test(session)
                 self._update_functional_results(session)
                 self.check_test_status()
@@ -2234,18 +2236,18 @@ class FMSLogicSQL(FMSData, FMSListener):
 
     def _ensure_fms_main_entry_exists(self, session: "Session") -> None:
         """Ensure FMS main entry exists in database, create if not."""
-        fms_entry = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
+        fms_entry = session.query(FMSMain).filter_by(fms_id=self.fms_id).first()
         
         if not fms_entry:
             self._create_new_fms_main_entry(session)
 
     def _create_new_fms_main_entry(self, session: "Session") -> None:
         """Create a new FMS main entry in the database."""
-        tv_check = session.query(TVStatus).filter_by(allocated=self.selected_fms_id).first()
+        tv_check = session.query(TVStatus).filter_by(allocated=self.fms_id).first()
         max_id = session.query(func.max(FMSMain.id)).scalar() or 0
         
         new_fms = FMSMain(
-            fms_id=self.selected_fms_id,
+            fms_id=self.fms_id,
             model='FM',
             status=FMSProgressStatus.TESTING,
             drawing='20025.10.AF-R8',
@@ -2273,13 +2275,13 @@ class FMSLogicSQL(FMSData, FMSListener):
     def _update_or_create_functional_test(self, session: "Session") -> None:
         """Update existing functional test entry or create new one."""
         flow_test_entry = session.query(FMSFunctionalTests).filter_by(
-            fms_id=self.selected_fms_id, 
+            fms_id=self.fms_id, 
             test_id=self.test_id
         ).first()
         
         # Determine if status should be updated
         flow_check = session.query(FMSFunctionalTests).filter_by(
-            fms_id=self.selected_fms_id
+            fms_id=self.fms_id
         ).all()
         status_update = FMSProgressStatus.TESTING if not flow_check else None
         
@@ -2346,7 +2348,7 @@ class FMSLogicSQL(FMSData, FMSListener):
         type_map = self._get_test_type_map()
         
         flow_test_entry = FMSFunctionalTests(
-            fms_id=self.selected_fms_id,
+            fms_id=self.fms_id,
             test_id=self.test_id,
             test_type=type_map[self.test_type],
             inlet_pressure=self.inlet_pressure,
@@ -2443,9 +2445,9 @@ class FMSLogicSQL(FMSData, FMSListener):
                 session = self.Session()
             except:
                 session = self.Session
-            flow_tests = session.query(FMSFunctionalTests).filter_by(fms_id=self.selected_fms_id).all()
-            fr_tests = session.query(FMSFRTests).filter_by(fms_id=self.selected_fms_id).all()
-            tvac_tests = session.query(FMSTvac).filter_by(fms_id=self.selected_fms_id).all()
+            flow_tests = session.query(FMSFunctionalTests).filter_by(fms_id=self.fms_id).all()
+            fr_tests = session.query(FMSFRTests).filter_by(fms_id=self.fms_id).all()
+            tvac_tests = session.query(FMSTvac).filter_by(fms_id=self.fms_id).all()
             if flow_tests:
                 if all(test_type in [test.test_type for test in flow_tests] for test_type in\
                         [FunctionalTestType.HIGH_CLOSED_LOOP, FunctionalTestType.LOW_CLOSED_LOOP, FunctionalTestType.LOW_SLOPE, FunctionalTestType.HIGH_SLOPE]) and fr_tests and not tvac_tests:
@@ -2454,11 +2456,11 @@ class FMSLogicSQL(FMSData, FMSListener):
                         fms_main.status = FMSProgressStatus.READY_FOR_TVAC if not\
                               (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
                     else:
-                        fms_main = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
+                        fms_main = session.query(FMSMain).filter_by(fms_id=self.fms_id).first()
                         if fms_main:
                             fms_main.status = FMSProgressStatus.READY_FOR_TVAC if not\
                                   (fms_main.status == FMSProgressStatus.SHIPMENT or fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
-                    print(f"FMS {self.selected_fms_id} flow tests completed.")
+                    print(f"FMS {self.fms_id} flow tests completed.")
 
                     session.commit()
             # self.fms.print_table(FMSMain, limit=3)
@@ -2495,7 +2497,7 @@ class FMSLogicSQL(FMSData, FMSListener):
         try:
             session = self._get_session()
             
-            if self.functional_test_results and self.selected_fms_id:
+            if self.functional_test_results and self.fms_id:
                 # Delete existing entry if present
                 if not self._check_existing_fr_test(session):
                     return
@@ -2519,7 +2521,7 @@ class FMSLogicSQL(FMSData, FMSListener):
     def _check_existing_fr_test(self, session: "Session") -> bool:
         """Check if the current FR test already exists."""
         fr_check = session.query(FMSFRTests).filter_by(
-            fms_id=self.selected_fms_id, 
+            fms_id=self.fms_id, 
             test_id=self.test_id
         ).first()
         
@@ -2540,7 +2542,7 @@ class FMSLogicSQL(FMSData, FMSListener):
         fr_entry = FMSFRTests(
             **update_dict,
             gas_type=self.gas_type if self.gas_type else 'Xe',
-            fms_id=self.selected_fms_id,
+            fms_id=self.fms_id,
             inlet_pressure=self.inlet_pressure,
             outlet_pressure=self.outlet_pressure,
             test_id=self.test_id,
@@ -2591,7 +2593,7 @@ class FMSLogicSQL(FMSData, FMSListener):
                 return
         try:
             session = self._get_session()
-            if self.functional_test_results and self.selected_fms_id:
+            if self.functional_test_results and self.fms_id:
                 self._handle_tvac_entries(session)
             # self.fms.print_table(FMSTvac, limit=10)
             # self.fms.print_table(FMSMain, limit=10)
@@ -2611,7 +2613,7 @@ class FMSLogicSQL(FMSData, FMSListener):
 
     def _check_existing_tvac_entries(self, session: "Session"):
         tvac_check = session.query(FMSTvac).filter_by(
-            fms_id=self.selected_fms_id, test_id=self.test_id
+            fms_id=self.fms_id, test_id=self.test_id
         ).all()
         if tvac_check:
             print(f"This {self.test_type} test with test ID {self.test_id} has already been registered in the database")
@@ -2630,13 +2632,13 @@ class FMSLogicSQL(FMSData, FMSListener):
             print(f"Error parsing date: {str(e)}")
             date = datetime.now().date()
 
-        tvac_entry = FMSTvac(**update_dict, fms_id=self.selected_fms_id,
+        tvac_entry = FMSTvac(**update_dict, fms_id=self.fms_id,
                             test_id=self.test_id, date=date, remark=self.remark)
         session.add(tvac_entry)
         return tvac_entry
 
     def _update_fms_status(self, session: "Session"):
-        fms_main = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
+        fms_main = session.query(FMSMain).filter_by(fms_id=self.fms_id).first()
         if fms_main and fms_main.status not in [
             FMSProgressStatus.SHIPMENT,
             FMSProgressStatus.DELIVERED,
@@ -3191,6 +3193,7 @@ class FMSLogicSQL(FMSData, FMSListener):
             
         if update_assembly_data:
             self.add_fms_assembly_data()
+
         try:
             try:
                 session = self.Session()
