@@ -935,11 +935,11 @@ class FMSQuery:
 
                 def on_correction_change(change: dict):
                     correction = correction_checkbox.value
-                    total_flow = np.array(self.total_flow) / correction_factor if correction else np.array(self.total_flow)
+                    total_flow = np.array(self.total_flow)
                     if plot and 'slope' in test_type.lower():
                         flows = total_flow
                         powers = np.array(self.tv_powers)
-                        flow_power_slope = self.get_flow_power_slope(flows, powers)
+                        flow_power_slope = self.get_flow_power_slope(flows, powers, correction_factor = correction_factor)
                         with plot_output:
                             plot_output.clear_output()
                             self.check_tv_slope(**flow_power_slope, correction = correction, serial = self.fms_entry.fms_id)
@@ -951,7 +951,7 @@ class FMSQuery:
                     on_correction_change({})
                 return image
 
-    def get_flow_power_slope(self, flows: list[float], powers: list[float], num_points: int = 3000) -> dict:
+    def get_flow_power_slope(self, flows: list[float], powers: list[float], num_points: int = 3000, correction_factor: float = 1) -> dict:
         """
         Calculate the flow-power slope for specified ranges of flow rates.
         Args:
@@ -996,8 +996,8 @@ class FMSQuery:
 
             model = LinearRegression()
             model.fit(power_smooth.reshape(-1, 1), flow_smooth)
-            slope = model.coef_[0]
-            intercept = model.intercept_
+            slope = model.coef_[0]/correction_factor
+            intercept = model.intercept_/correction_factor
 
             return power_smooth, flow_smooth, slope, intercept
 
