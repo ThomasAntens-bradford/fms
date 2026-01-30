@@ -1060,13 +1060,11 @@ class FMSQuery:
 
                 def on_correction_change(change: dict):
                     correction = correction_checkbox.value
-                    total_flow = np.array(self.total_flow) / correction_factor if correction else np.array(self.total_flow)
+                    total_flow = np.array(self.total_flow) 
                     if plot and 'slope' in test_type.lower():
-                        flows = total_flow
-                        powers = np.array(self.tv_powers)
                         with plot_output:
                             plot_output.clear_output()
-                            self.check_tv_slope(**flow_power_slope, correction = correction, serial = self.fms_entry.fms_id)
+                            self.check_tv_slope(test_run.flow_power_slope, correction = correction, serial = self.fms_entry.fms_id)
 
                 correction_checkbox.observe(on_correction_change, names='value')
                 if plot:
@@ -1075,34 +1073,39 @@ class FMSQuery:
                     on_correction_change({})
                 return image
 
-    def check_tv_slope(self, tv_power_12: np.ndarray, tv_power_24: np.ndarray, total_flows_12: np.ndarray, \
-                       total_flows_24: np.ndarray, slope12: float, slope24: float, intercept12: float, intercept24: float, correction: bool = False,\
+    def check_tv_slope(self, flow_power_slope: dict[str, dict[str, float]], correction: bool = False,\
                         serial: str = "") -> None:
         """
         Plot the flow-power slopes and check against specifications.
+
         Args:
-            tv_power_12 (np.ndarray): Smoothed TV power values for 1-2 mg/s range.
-            tv_power_24 (np.ndarray): Smoothed TV power values for 2-4 mg/s range.
-            total_flows_12 (np.ndarray): Smoothed flow values for 1-2 mg/s range.
-            total_flows_24 (np.ndarray): Smoothed flow values for 2-4 mg/s range.
-            slope12 (float): Slope for 1-2 mg/s range.
-            slope24 (float): Slope for 2-4 mg/s range.
-            intercept12 (float): Intercept for 1-2 mg/s range.
-            intercept24 (float): Intercept for 2-4 mg/s range.
+            flow_power_slope : dict
+                Dictionary containing the slope/flow/TV power data relevant for the TV Slope spec in [AD02].
+            correction : bool
+                Whether to correct the flow data with regards to the deviation from the reference inlet pressure.
         """
         try:
-            slope_line_12 = slope12 * tv_power_12 + intercept12
-            slope_line_24 = slope24 * tv_power_24 + intercept24
+            low_region = flow_power_slope.get("low", ())
+            high_region = flow_power_slope.get("high", ())
+            if not low_region or not high_region:
+                print("Insufficient data to perform slope analysis.")
+                return
+            
+            slope_low, intercept_low, flow_low, power_low = low_region
+            slope_high, intercept_high, flow_high, power_high = high_region
 
-            min_slope12 = self.range12_low[0] if self.inlet_pressure < 100 else self.range12_high[0]
-            max_slope12 = self.range12_low[1] if self.inlet_pressure < 100 else self.range12_high[1]
-            min_slope24 = self.range24_low[0] if self.inlet_pressure < 100 else self.range24_high[0]
-            max_slope24 = self.range24_low[1] if self.inlet_pressure < 100 else self.range24_high[1]
+            min_slope_low = self.range12_low[0] if self.inlet_pressure < 100 else self.range12_high[0]
+            max_slope_low = self.range12_low[1] if self.inlet_pressure < 100 else self.range12_high[1]
+            min_slope_high = self.range24_low[0] if self.inlet_pressure < 100 else self.range24_high[0]
+            max_slope_high = self.range24_low[1] if self.inlet_pressure < 100 else self.range24_high[1]
+
+            slope_line_low = slope_low * power_low + intercept_low
+            slope_line_high = slope_high * power_high + intercept_high
 
             plt.figure(figsize=(14, 5))
             plt.subplot(1, 2, 1)
-            plt.plot(tv_power_12, total_flows_12, 'b-', label='1-2 mg/s')
-            plt.plot(tv_power_12, slope_line_12, 'g--', label=(f"Slope: {slope12:.2f} mg/s W^-1 [✓]" if min_slope12 <= slope12 <= max_slope12 
+            plt.plot(power_low, flow_low, 'b-', label='1-2 mg/s')
+            plt.plot(power_low, slope_line_12, 'g--', label=(f"Slope: {slope12:.2f} mg/s W^-1 [✓]" if min_slope12 <= slope12 <= max_slope12 
                                                                else f"Slope: {round(slope12)} mg/s W^-1 [✗]"))
             plt.xlabel(f'TV Power [{self.units[FMSFlowTestParameters.AVG_TV_POWER.value]}]')
             plt.ylabel(f'Total Flow [{self.units[FMSFlowTestParameters.TOTAL_FLOW.value]} {self.gas_type}]')
