@@ -2070,7 +2070,7 @@ class FMSLogicSQL(FMSData, FMSListener):
     
     Methods
     ---------
-        listen_to_fms_main_results(): 
+        listen_for_fms_acceptance_reports(): 
             Listens for new FMS main test result files and processes them.
         listen_to_functional_tests(): 
             Listens for new functional test files and processes them.
@@ -2108,7 +2108,7 @@ class FMSLogicSQL(FMSData, FMSListener):
         self.fms = fms
         self.fms_id = None
 
-    def listen_to_fms_main_results(self, data_folder: str = 'FMS_data') -> None:
+    def listen_for_fms_acceptance_reports(self, data_folder: str = 'FMS_data') -> None:
         """
         Starts FMSListener class to listen for new FMS main test result files in the specified data folder.
         Upon detecting a new file, it processes the data and updates the database accordingly.
@@ -2689,19 +2689,40 @@ class FMSLogicSQL(FMSData, FMSListener):
         return calculated_ac_ratio, specified_ac_ratio
 
 
-    def _allocate_hpiv(self, session, hpiv_id, fms_id):
+    def _allocate_hpiv(self, session: "Session", hpiv_id: str = "", fms_id: str = ""):
         hpiv = session.query(HPIVCertification).filter_by(hpiv_id=hpiv_id).first()
         if hpiv and hpiv.allocated != fms_id:
             hpiv.allocated = fms_id
 
 
-    def _allocate_tv(self, session, tv_id, fms_id):
+    def _allocate_tv(self, session: "Session", tv_id: str = "", fms_id: str = ""):
         tv = session.query(TVStatus).filter_by(tv_id=tv_id).first()
         if tv and tv_id != str(15):
             tv.allocated = fms_id
 
-
-    def _allocate_manifold(self, session, fms_entry, component_dict, fms_id, calculated_ac_ratio, specified_ac_ratio, manifold_id):
+    def _allocate_manifold(self, session: "Session", fms_entry: FMSMain, manifold: ManifoldStatus, component_dict: dict[str, Any], 
+                           fms_id: str = "", calculated_ac_ratio: float = None, specified_ac_ratio: float = None, manifold_id: str = ""):
+        """
+        Allocate a manifold to an FMS entry and update its associated components.
+        This method handles the allocation of a manifold to a specific FMS (Fuel Management System) entry.
+        It supports allocation by manifold ID or through lookup chain matching on LPT, anode, and cathode
+        components. Updates manifold allocation status and AC ratio values as needed.
+        Args:
+            session (Session): The database session for querying and updating records.
+            fms_entry (FMSMain): The FMS main entry associated with this allocation.
+            manifold (ManifoldStatus): The manifold status object to allocate (may be overridden).
+            component_dict (dict[str, Any]): Dictionary containing component IDs:
+            fms_id (str, optional): The FMS identifier for allocation. Defaults to "".
+            calculated_ac_ratio (float, optional): The calculated AC ratio value. Defaults to None.
+            specified_ac_ratio (float, optional): The specified AC ratio value. Defaults to None.
+            manifold_id (str, optional): Specific manifold ID to allocate. If provided, direct allocation
+                is performed. Defaults to "".
+        Behavior:
+            - If manifold_id is provided: allocates that specific manifold and returns early.
+            - If no manifold_id: searches for existing allocation or performs lookup chain matching
+                on LPT, anode, and cathode relationships to find and allocate an appropriate manifold.
+            - Updates manifold AC ratio values and manifold entries when a match is found.
+        """
         lpt_id = component_dict.get('lpt_id')
         anode_fr_id = component_dict.get('anode_fr_id')
         cathode_fr_id = component_dict.get('cathode_fr_id')
@@ -2736,7 +2757,31 @@ class FMSLogicSQL(FMSData, FMSListener):
                     break
 
 
-    def _update_manifold_entries(self, session, fms_entry, manifold, fms_id, lpt_id, anode_fr_id, cathode_fr_id, calculated_ac_ratio, specified_ac_ratio):
+    def _update_manifold_entries(self, session: "Session", fms_entry: FMSMain, manifold: ManifoldStatus,
+                                fms_id: str = "", lpt_id: str = "", anode_fr_id: str = "", cathode_fr_id: str = "", calculated_ac_ratio: float = None, specified_ac_ratio: float = None):
+        """
+        Update FMS entry and manifold-related component associations.
+        This method synchronizes the FMS entry with manifold status and manages the relationship
+        between anode, cathode, and LPT components with the manifold. It updates component
+        set IDs when they differ from the manifold's set ID and sets AC ratio values accordingly.
+
+        Args:
+            session (Session): Database session for querying component data.
+            fms_entry (FMSMain): The FMS main entry to be updated.
+            manifold (ManifoldStatus): The manifold status containing component references.
+            fms_id (str, optional): The FMS identifier. Defaults to "".
+            lpt_id (str, optional): The LPT (Low-Pressure Turbine) identifier. Defaults to "".
+            anode_fr_id (str, optional): The anode flow regulator identifier. Defaults to "".
+            cathode_fr_id (str, optional): The cathode flow regulator identifier. Defaults to "".
+            calculated_ac_ratio (float, optional): Calculated anode-cathode ratio value. Defaults to None.
+            specified_ac_ratio (float, optional): Specified anode-cathode ratio value. Defaults to None.
+        Returns:
+            None
+        Side Effects:
+            - Updates fms_entry.manifold_id, anode_fr_id, and cathode_fr_id
+            - Modifies anode, cathode, and LPT component set_id values in the database
+            - Updates manifold AC ratio values when components are reassigned
+        """
         # Update FMS entry from manifold
         fms_entry.manifold_id = manifold.set_id
 
@@ -2777,7 +2822,15 @@ class FMSLogicSQL(FMSData, FMSListener):
             if lpt and lpt.set_id != manifold.set_id:
                 lpt.set_id = manifold.set_id
 
-    def convert_FR_id(self, session: "Session", type: str, fr_id: str, available_anodes: list[str] = [], available_cathodes: list[str] = [], fms_id: str = None) -> str:
+    def convert_FR_id(
+        self, 
+        session: "Session", 
+        type: str, 
+        fr_id: str, 
+        available_anodes: list[str] = [], 
+        available_cathodes: list[str] = [], 
+        fms_id: str = None
+    ) -> str:
         """
         Converts an ambiguous FR ID to the correct full FR ID from the database.
         Args:
@@ -2795,80 +2848,112 @@ class FMSLogicSQL(FMSData, FMSListener):
         fr_id = str(fr_id).zfill(3)
 
         try:
-            if type == 'anode':
-                # First, try matching with FMS "24" priority
-                if start_fms == "24" and available_anodes:
-                    fr = session.query(AnodeFR).filter(
-                        ~AnodeFR.fr_id.in_(self.converted_ids),
-                        AnodeFR.fr_id.in_(available_anodes),
-                        AnodeFR.fr_id.startswith("C24"),
-                        AnodeFR.fr_id.endswith(fr_id),
-                        AnodeFR.flow_rates != None
-                    ).first()
-                    if fr:
-                        self.converted_ids.append(fr.fr_id)
-                        return fr.fr_id
-
-                # Regular search without FMS priority
-                filters = [~AnodeFR.fr_id.in_(self.converted_ids),
-                        AnodeFR.fr_id.endswith(fr_id),
-                        AnodeFR.flow_rates != None]
-                if available_anodes:
-                    filters.append(AnodeFR.fr_id.in_(available_anodes))
-                fr = session.query(AnodeFR).filter(*filters).first()
-                if fr:
-                    self.converted_ids.append(fr.fr_id)
-                    return fr.fr_id
-
-                # FRCertification fallback
-                filters_cert = [~FRCertification.anode_fr_id.in_(self.converted_ids),
-                                FRCertification.anode_fr_id.endswith(fr_id)]
-                if available_anodes:
-                    filters_cert.append(FRCertification.anode_fr_id.in_(available_anodes))
-                fr = session.query(FRCertification).filter(*filters_cert).first()
-                if fr:
-                    self.converted_ids.append(fr.anode_fr_id)
-                    return fr.anode_fr_id
-
-            elif type == 'cathode':
-                if start_fms == "24" and available_cathodes:
-                    fr = session.query(CathodeFR).filter(
-                        ~CathodeFR.fr_id.in_(self.converted_ids),
-                        CathodeFR.fr_id.in_(available_cathodes),
-                        CathodeFR.fr_id.startswith("C24"),
-                        CathodeFR.fr_id.endswith(fr_id),
-                        CathodeFR.flow_rates != None
-                    ).first()
-                    if fr:
-                        self.converted_ids.append(fr.fr_id)
-                        return fr.fr_id
-
-                filters = [~CathodeFR.fr_id.in_(self.converted_ids),
-                        CathodeFR.fr_id.endswith(fr_id),
-                        CathodeFR.flow_rates != None]
-                if available_cathodes:
-                    filters.append(CathodeFR.fr_id.in_(available_cathodes))
-                fr = session.query(CathodeFR).filter(*filters).first()
-                if fr:
-                    self.converted_ids.append(fr.fr_id)
-                    return fr.fr_id
-
-                # FRCertification fallback
-                filters_cert = [~FRCertification.cathode_fr_id.in_(self.converted_ids),
-                                FRCertification.cathode_fr_id.endswith(fr_id)]
-                if available_cathodes:
-                    filters_cert.append(FRCertification.cathode_fr_id.in_(available_cathodes))
-                fr = session.query(FRCertification).filter(*filters_cert).first()
-                if fr:
-                    self.converted_ids.append(fr.cathode_fr_id)
-                    return fr.cathode_fr_id
-
+            if type == "anode":
+                return self._convert_anode_fr(session, fr_id, available_anodes, start_fms)
+            elif type == "cathode":
+                return self._convert_cathode_fr(session, fr_id, available_cathodes, start_fms)
             return fr_id
-
         except Exception as e:
             print(f"Error converting FR ID: {str(e)}")
             traceback.print_exc()
             return None
+
+
+    def _convert_anode_fr(self, session, fr_id: str, available_anodes: list[str], start_fms: str) -> str:
+        # FMS "24" priority
+        if start_fms == "24" and available_anodes:
+            fr = session.query(AnodeFR).filter(
+                ~AnodeFR.fr_id.in_(self.converted_ids),
+                AnodeFR.fr_id.in_(available_anodes),
+                AnodeFR.fr_id.startswith("C24"),
+                AnodeFR.fr_id.endswith(fr_id),
+                AnodeFR.flow_rates != None
+            ).first()
+            if fr:
+                self.converted_ids.append(fr.fr_id)
+                return fr.fr_id
+
+        # Regular AnodeFR search
+        fr = self._search_anode_fr(session, fr_id, available_anodes)
+        if fr:
+            return fr
+
+        # FRCertification fallback
+        fr = self._search_anode_cert(session, fr_id, available_anodes)
+        if fr:
+            return fr
+
+        return fr_id
+
+    def _convert_cathode_fr(self, session, fr_id: str, available_cathodes: list[str], start_fms: str) -> str:
+        # FMS "24" priority
+        if start_fms == "24" and available_cathodes:
+            fr = session.query(CathodeFR).filter(
+                ~CathodeFR.fr_id.in_(self.converted_ids),
+                CathodeFR.fr_id.in_(available_cathodes),
+                CathodeFR.fr_id.startswith("C24"),
+                CathodeFR.fr_id.endswith(fr_id),
+                CathodeFR.flow_rates != None
+            ).first()
+            if fr:
+                self.converted_ids.append(fr.fr_id)
+                return fr.fr_id
+
+        # Regular CathodeFR search
+        fr = self._search_cathode_fr(session, fr_id, available_cathodes)
+        if fr:
+            return fr
+
+        # FRCertification fallback
+        fr = self._search_cathode_cert(session, fr_id, available_cathodes)
+        if fr:
+            return fr
+
+        return fr_id
+
+
+    def _search_anode_fr(self, session, fr_id: str, available_anodes: list[str]) -> str | None:
+        filters = [~AnodeFR.fr_id.in_(self.converted_ids), AnodeFR.fr_id.endswith(fr_id), AnodeFR.flow_rates != None]
+        if available_anodes:
+            filters.append(AnodeFR.fr_id.in_(available_anodes))
+        fr = session.query(AnodeFR).filter(*filters).first()
+        if fr:
+            self.converted_ids.append(fr.fr_id)
+            return fr.fr_id
+        return None
+
+
+    def _search_anode_cert(self, session, fr_id: str, available_anodes: list[str]) -> str | None:
+        filters_cert = [~FRCertification.anode_fr_id.in_(self.converted_ids), FRCertification.anode_fr_id.endswith(fr_id)]
+        if available_anodes:
+            filters_cert.append(FRCertification.anode_fr_id.in_(available_anodes))
+        fr = session.query(FRCertification).filter(*filters_cert).first()
+        if fr:
+            self.converted_ids.append(fr.anode_fr_id)
+            return fr.anode_fr_id
+        return None
+
+
+    def _search_cathode_fr(self, session, fr_id: str, available_cathodes: list[str]) -> str | None:
+        filters = [~CathodeFR.fr_id.in_(self.converted_ids), CathodeFR.fr_id.endswith(fr_id), CathodeFR.flow_rates != None]
+        if available_cathodes:
+            filters.append(CathodeFR.fr_id.in_(available_cathodes))
+        fr = session.query(CathodeFR).filter(*filters).first()
+        if fr:
+            self.converted_ids.append(fr.fr_id)
+            return fr.fr_id
+        return None
+
+
+    def _search_cathode_cert(self, session, fr_id: str, available_cathodes: list[str]) -> str | None:
+        filters_cert = [~FRCertification.cathode_fr_id.in_(self.converted_ids), FRCertification.cathode_fr_id.endswith(fr_id)]
+        if available_cathodes:
+            filters_cert.append(FRCertification.cathode_fr_id.in_(available_cathodes))
+        fr = session.query(FRCertification).filter(*filters_cert).first()
+        if fr:
+            self.converted_ids.append(fr.cathode_fr_id)
+            return fr.cathode_fr_id
+        return None
 
     def calculate_ac_ratio(self, session: "Session", anode_id: str, cathode_id: str) -> float | None:
         """
@@ -2896,54 +2981,145 @@ class FMSLogicSQL(FMSData, FMSListener):
             traceback.print_exc()
             return None
 
-    def add_fms_assembly_data(self, fms_data: FMSData = None) -> None:
+    def add_fms_assembly_data(
+        self, 
+        report_pdf_file: str = "", 
+        assembly_data: dict[str, str] = {}, 
+        update_test_results: bool = False
+    ) -> None:
         """
-        Adds FMS assembly data to the database with the FMS data class instance.
-        This can be done automatically from the test reports or directly using input from the FMS assembly
-        class procedure. If fms_data is not provided, it uses the attributes obtained in the listening event.
+        Adds FMS assembly data to the database from test reports or manual assembly input.
+
+        This method processes FMS assembly information and creates/updates FMS main entries in the database.
+        Assembly data can be obtained automatically from PDF test reports or provided manually via the 
+        assembly_data parameter. If neither source is available, uses attributes from listening events.
+
         Args:
-            fms_data (FMS_data): FMS data class instance containing assembly data.
+            report_pdf_file (str, optional): Path to the FMS test report PDF containing assembly data.
+                If provided, automatically extracts component serials and test results. Defaults to "".
+            assembly_data (dict[str, str], optional): Manual assembly data dictionary containing FMS 
+                component information (fms_id, hpiv_id, tv_id, lpt_id, anode_fr_id, cathode_fr_id, etc.).
+                Defaults to empty dict.
+            update_test_results (bool, optional): If True, automatically updates FMS main test results 
+                after extracting from the PDF report. Only used when report_pdf_file is provided. 
+                Defaults to False.
+
+        Raises:
+            Exception: If database operations fail, the exception is caught, printed, and the session 
+                is rolled back to maintain database integrity.
+
+        Side Effects:
+            - Creates or updates FMS main entry in the database
+            - Allocates components (HPIV, TV, LPT, manifold, anode FR, cathode FR) to the FMS entry
+            - Updates component availability status in the database
+            - Commits changes to the database upon successful completion
+
+        Note:
+            Requires at least one data source: report_pdf_file, assembly_data, or pre-populated 
+            component_serials attribute from a listening event.
         """
-        session = None
-        if fms_data:
-            self.component_serials = fms_data.component_serials
-            doc_ref = os.path.basename(fms_data.pdf_file) if fms_data.pdf_file else None
+        session: "Session" | None = None
         try:
-            session: "Session" = self.Session()
-            max_id = session.query(func.max(FMSMain.id)).scalar() or 0
-            available_anodes = session.query(AnodeFR).filter(AnodeFR.set_id == None).all()
-            available_cathodes = session.query(CathodeFR).filter(CathodeFR.set_id == None).all()
-            if available_anodes and available_cathodes:
-                anode_ids = [a.fr_id for a in available_anodes]
-                cathode_ids = [c.fr_id for c in available_cathodes]
-            if self.component_serials and not self.assembly_data:
-                anode_id = self.convert_FR_id(session, 'anode', self.component_serials.get('anode_fr_id', ''), available_anodes=anode_ids, fms_id = self.component_serials.get('fms_id', ''))
-                cathode_id = self.convert_FR_id(session, 'cathode', self.component_serials.get('cathode_fr_id', ''), available_cathodes=cathode_ids, fms_id = self.component_serials.get('fms_id', ''))
-                if not self.component_serials.get('drawing', None):
-                    self.component_serials['drawing'] = '20025.10.AF-R8'
-                self.component_serials['anode_fr_id'] = anode_id
-                self.component_serials['cathode_fr_id'] = cathode_id
-                if not self.component_serials.get('model', None):
-                    self.component_serials['model'] = 'FM'
-                if not self.component_serials.get('gas_type', None):
-                    self.component_serials['gas_type'] = 'Xe'
-                fms_entry = FMSMain(**self.component_serials, test_doc_ref = doc_ref, id = max_id + 1)
-                self.allocate_components(session, fms_entry, self.component_serials)
-                session.merge(fms_entry)
+            self._prepare_component_serials(report_pdf_file, assembly_data, update_test_results)
+            if not self.component_serials and not assembly_data:
+                return
 
-            elif self.assembly_data:
-                fms_entry = FMSMain(**self.assembly_data, status = FMSProgressStatus.ASSEMBLY_COMPLETED, id = max_id + 1)
-                self.allocate_components(session, fms_entry, self.assembly_data)
-                session.merge(fms_entry)
+            session = self.Session()
+            doc_ref: str | None = os.path.basename(self.pdf_file) if self.pdf_file else None
+            max_id: int = session.query(func.max(FMSMain.id)).scalar() or 0
 
+            available_anodes, available_cathodes = self._get_available_fr(session)
+            if self.component_serials and not assembly_data:
+                fms_entry: FMSMain = self._build_fms_entry_from_serials(session, max_id, available_anodes, available_cathodes, doc_ref)
+            elif assembly_data:
+                fms_entry: FMSMain = self._build_fms_entry_from_assembly(session, max_id)
+            
             session.commit()
             self.fms.print_table(FMSMain)
+
         except Exception as e:
             print(f"Error adding fms assembly data: {str(e)}")
             if session:
                 session.rollback()
             traceback.print_exc()
 
+
+    def _prepare_component_serials(
+        self, 
+        report_pdf_file: str, 
+        assembly_data: dict[str, str], 
+        update_test_results: bool
+    ) -> None:
+        if not hasattr(self, "component_serials") or not self.component_serials:
+            if report_pdf_file and not assembly_data:
+                self.pdf_file = report_pdf_file
+                self.extract_FMS_test_results()
+                if update_test_results:
+                    self.update_fms_main_test_results()
+            elif not report_pdf_file:
+                print(
+                    "Either provide the test report pdf file that contains the assembly data or use the "
+                    "'listen_for_fms_acceptance_reports' function to obtain the acceptance test results."
+                )
+                return
+        self.component_serials = getattr(self, "component_serials", {})
+
+
+    def _get_available_fr(
+        self, 
+        session: "Session"
+    ) -> tuple[list[AnodeFR], list[CathodeFR]]:
+        available_anodes: list[AnodeFR] = session.query(AnodeFR).filter(AnodeFR.set_id == None).all()
+        available_cathodes: list[CathodeFR] = session.query(CathodeFR).filter(CathodeFR.set_id == None).all()
+        return available_anodes, available_cathodes
+
+
+    def _build_fms_entry_from_serials(
+        self, 
+        session: "Session", 
+        max_id: int, 
+        available_anodes: list[AnodeFR], 
+        available_cathodes: list[CathodeFR], 
+        doc_ref: str | None
+    ) -> FMSMain:
+        anode_ids: list[str] = [a.fr_id for a in available_anodes] if available_anodes else []
+        cathode_ids: list[str] = [c.fr_id for c in available_cathodes] if available_cathodes else []
+
+        anode_id: str = self.convert_FR_id(
+            session, 'anode', self.component_serials.get('anode_fr_id', ''), 
+            available_anodes=anode_ids, fms_id=self.component_serials.get('fms_id', '')
+        )
+        cathode_id: str = self.convert_FR_id(
+            session, 'cathode', self.component_serials.get('cathode_fr_id', ''), 
+            available_cathodes=cathode_ids, fms_id=self.component_serials.get('fms_id', '')
+        )
+
+        self.component_serials['anode_fr_id'] = anode_id
+        self.component_serials['cathode_fr_id'] = cathode_id
+        self.component_serials.setdefault('drawing', '20025.10.AF-R8')
+        self.component_serials.setdefault('model', 'FM')
+        self.component_serials.setdefault('gas_type', 'Xe')
+
+        fms_entry: FMSMain = FMSMain(**self.component_serials, test_doc_ref=doc_ref, id=max_id + 1)
+        self.allocate_components(session, fms_entry, self.component_serials)
+        session.merge(fms_entry)
+        return fms_entry
+
+
+    def _build_fms_entry_from_assembly(
+        self, 
+        session: "Session", 
+        max_id: int
+    ) -> FMSMain:
+        fms_entry: FMSMain = FMSMain(
+            **self.assembly_data, 
+            status=FMSProgressStatus.ASSEMBLY_COMPLETED, 
+            id=max_id + 1
+        )
+        self.allocate_components(session, fms_entry, self.assembly_data)
+        session.merge(fms_entry)
+        return fms_entry
+    
     def get_limit_status(self, parameter_name: str, value: float, unit: str, fms_data: FMSData = None) -> LimitStatus | None:
         """
         Determines the limit status of a parameter value based on predefined limits.
@@ -2975,24 +3151,21 @@ class FMSLogicSQL(FMSData, FMSListener):
 
         return LimitStatus.TRUE
 
-    def update_fms_main_test_results(self, fms_data: FMSData = None) -> None:
+    def update_fms_main_test_results(self) -> None:
         """
-        Updates the FMS main test results in the database with the FMS data class instance.
-        Args:
-            fms_data (FMSData): FMS data class instance containing main test results.
+        Updates the FMS main test results in the database.
         """
         automated_entry = False
-        if fms_data:
-            self.fms_test_results = fms_data.fms_main_test_results
-            self.component_serials = fms_data.component_serials
-            automated_entry = True
+        test_results: dict[str, dict] = self.fms_main_test_results
+        self.component_serials = self.component_serials
+        automated_entry = True
         session = None
         try:
             try:
                 session = self.Session()
             except:
                 session = self.Session
-            if not hasattr(self, 'fms_test_results') or not self.fms_test_results:
+            if not test_results:
                 print("No FMS test results to update.")
                 return  
 
@@ -3001,7 +3174,7 @@ class FMSLogicSQL(FMSData, FMSListener):
                 print("FMS ID not found in component serials.")
                 return
             
-            for param, values in self.fms_test_results.items():
+            for param, values in test_results.items():
                 characteristics = session.query(FMSTestResults).filter_by(
                     fms_id=fms_id, parameter_name = param).all()
                 if characteristics:
@@ -3021,7 +3194,7 @@ class FMSLogicSQL(FMSData, FMSListener):
                 else:
                     value = values.get('value')
                     unit = values.get('unit', None)
-                    within_limits = self.get_limit_status(param, value, unit, fms_data)
+                    within_limits = self.get_limit_status(param, value, unit)
                     lower = values.get('lower', False)
                     larger = values.get('larger', False)
                     equal = values.get('equal', True)
@@ -3043,7 +3216,7 @@ class FMSLogicSQL(FMSData, FMSListener):
                 )
                 session.add(characteristic)
             session.commit()
-            self.fms.print_table(FMSTestResults)
+            # self.fms.print_table(FMSTestResults)
         except Exception as e:
             print(f"Error updating fms main test results: {str(e)}")
             if session:
