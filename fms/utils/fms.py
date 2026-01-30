@@ -24,7 +24,7 @@ import ipywidgets as widgets
 from sqlalchemy import func, or_
 
 # TYPE_CHECKING imports
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
     from ..fms_data_structure import FMSDataStructure
@@ -77,23 +77,29 @@ class FMSListener(FileSystemEventHandler):
         fms_data (FMS_data): Instance of FMS_data containing the processed test data.
     """
 
-    def __init__(self, path="FMS_data", fms_data: "FMSData" = None):
+    def __init__(self, fms_data: "FMSData" = None):
         """
         Initialize the HPIV data listener.
 
         Args:
             path (str, optional): Directory path to monitor. Defaults to "FMS_data".
         """
-        self.path = path
-        self.observer = Observer()
-        self.observer.schedule(self, path, recursive=False)
-        self.observer.start()
         self.processed = False
         self.csv_files = []
         self._csv_timer = None
         self.test_type = None
         self.fms_data = fms_data
 
+    def start_listening(self, folder: str = "") -> None:
+        self.observer = Observer()
+        self.observer.schedule(self, folder, recursive=False)
+        self.observer.start()
+
+    def stop_listening(self) -> None:
+        if not hasattr(self, "observer"):
+            return
+        self.observer.stop()
+        self.observer.join()
 
     def _process_csv_batch(self):
         try:
@@ -163,7 +169,6 @@ class FMSListener(FileSystemEventHandler):
         elif filename.endswith('.pdf'):
             try:
                 self.fms_data.pdf_file = event.src_path
-                self.fms_data.extract_FMS_test_results()
                 self.processed = True
             except Exception as e:
                 print(f"Error processing PDF file {event.src_path}: {e}")
@@ -2115,22 +2120,16 @@ class FMSLogicSQL(FMSData, FMSListener):
 
         data_folder = os.path.join(os.getcwd(), data_folder)
         try:
-            self.fms_listener = FMSListener(data_folder)
+            self.start_listening(folder = data_folder)
             print(f"Started monitoring FMS data in: {data_folder}")
             while True:
                 try:
-                    time.sleep(1)  # Keep the script running to monitor for new files
-                    
-                    # Check if listener has processed new data
-                    if hasattr(self.fms_listener, 'processed') and self.fms_listener.processed:
-
-                        if hasattr(self.fms_listener, 'fms_data') and self.fms_listener.fms_data:
-                            self.fms_test_results = self.fms_listener.fms_data.fms_main_test_results
-                            self.component_serials = self.fms_listener.fms_data.component_serials
-
-                            self.add_fms_assembly_data()
-                            self.update_fms_main_test_results()
-                            self.fms_listener.processed = False  # Reset processed flag
+                    if self.processed:
+                        self.extract_FMS_test_results()
+                        self.add_fms_assembly_data()
+                        self.update_fms_main_test_results()
+                        self.stop_listening()
+                        break
 
                 except Exception as e:
                     print(f"Error in fms listener loop: {str(e)}")
@@ -2139,15 +2138,13 @@ class FMSLogicSQL(FMSData, FMSListener):
                     
         except KeyboardInterrupt:
             print("Stopping fms test results listener...")
-            if hasattr(self, 'fms_listener') and self.fms_listener:
-                self.fms_listener.observer.stop()
-                self.fms_listener.observer.join()
+            self.stop_listening()
         except Exception as e:
             print(f"Fatal error in fms test results listener: {str(e)}")
             traceback.print_exc()
             # Try to restart the listener after a brief delay
             time.sleep(5)
-            print("Attempting to restart fms test results listener...")
+            print("Attempting to restart listening")
             self.listen_to_fms_main_results(data_folder=data_folder)
 
     def listen_to_functional_tests(self, data_folder: str = 'FMS_data') -> None:
@@ -2158,23 +2155,15 @@ class FMSLogicSQL(FMSData, FMSListener):
         data_folder = os.path.join(os.getcwd(), data_folder)
         print(data_folder)
         try:
-            self.functional_tests_listener = FMSListener(data_folder)
+            self.start_listening(folder = data_folder)
             print(f"Started monitoring functional tests data in: {data_folder}\n Drop the xls file in the FMS Data folder on the desktop.")
             while True:
                 try:
-                    time.sleep(1)  # Keep the script running to monitor for new files
 
-                    # Check if listener has processed new data
-                    if hasattr(self.functional_tests_listener, 'processed') and self.functional_tests_listener.processed:
-                        
-                        if hasattr(self.functional_tests_listener, 'fms_data') and self.functional_tests_listener.fms_data:
-                            try:
-                                session = self.Session()
-                            except:
-                                session = self.Session
-                            self.functional_tests_listener.fms_data.show_test_input_field(session = session, fms_sql = self)
-                            self.functional_tests_listener.processed = False  
-                            break
+                    if self.processed:
+                        self.extract_flow_data()
+                        self.stop_listening()
+                        break
 
                 except Exception as e:
                     print(f"Error in functional tests listener loop: {str(e)}")
@@ -2183,9 +2172,7 @@ class FMSLogicSQL(FMSData, FMSListener):
 
         except KeyboardInterrupt:
             print("Stopping functional tests listener...")
-            if hasattr(self, 'functional_tests_listener') and self.functional_tests_listener:
-                self.functional_tests_listener.observer.stop()
-                self.functional_tests_listener.observer.join()
+            self.stop_listening()
         except Exception as e:
             print(f"Fatal error in functional tests listener: {str(e)}")
             traceback.print_exc()
@@ -2194,154 +2181,242 @@ class FMSLogicSQL(FMSData, FMSListener):
             print("Attempting to restart functional tests listener...")
             self.listen_to_functional_tests(data_folder=data_folder)
 
-    def update_flow_test_results(self, fms_data: FMSData = None) -> None:
+    def update_flow_test_results(self) -> None:
         """
         Updates flow test results in the database with the FMS data class instance.
         This can be done automatically from the test reports or directly using input from the FMSTesting
         class procedure. If fms_data is not provided, it uses the attributes obtained in the listening event.
-        Args:
-            fms_data (FMS_data): FMS data class instance containing flow test results.
         """
         session = None
-        if fms_data:
-            self.inlet_pressure = fms_data.inlet_pressure
-            self.outlet_pressure = fms_data.outlet_pressure
-            self.temp_type = fms_data.temperature_type
-            self.temperature = fms_data.temperature
-            self.units = fms_data.units
-            self.test_type = fms_data.test_type
-            self.test_id = fms_data.test_id
-            self.flow_power_slope = fms_data.flow_power_slope
-            self.response_times = fms_data.response_times
-            self.response_regions = fms_data.response_regions
-            self.slope_correction = fms_data.slope_correction
-            self.remark = 'Automated entry'
-            self.functional_test_results = fms_data.functional_test_results
         try:
-            try:
-                session = self.Session()
-            except:
-                session = self.Session
-            type_map = {
-                'high_closed_loop': FunctionalTestType.HIGH_CLOSED_LOOP,
-                'high_open_loop': FunctionalTestType.HIGH_OPEN_LOOP,
-                'low_closed_loop': FunctionalTestType.LOW_CLOSED_LOOP,
-                'low_open_loop': FunctionalTestType.LOW_OPEN_LOOP,
-                'low_slope': FunctionalTestType.LOW_SLOPE,
-                'high_slope': FunctionalTestType.HIGH_SLOPE,
-            }
+            session = self._get_session()
 
-            fms_entry = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
-            if not fms_entry:
-                tv_check = session.query(TVStatus).filter_by(allocated = self.selected_fms_id).first()
-                max_id = session.query(func.max(FMSMain.id)).scalar() or 0
-                new_fms = FMSMain(
-                    fms_id=self.selected_fms_id,
-                    model='FM',
-                    status=FMSProgressStatus.TESTING,
-                    drawing='20025.10.AF-R8',
-                    gas_type=self.gas_type if self.gas_type else 'Xe',
-                    id = max_id + 1
-                )
-                if tv_check:
-                    new_fms.tv_id = tv_check.tv_id
-                session.add(new_fms)
+            self._ensure_fms_main_entry_exists(session)
 
-            if self.flow_power_slope:
-                del self.flow_power_slope['tv_power_12']
-                del self.flow_power_slope['tv_power_24']
-                del self.flow_power_slope['total_flows_12']
-                del self.flow_power_slope['total_flows_24']
-            else:
-                self.flow_power_slope = {}
-            
+            self._prepare_flow_power_slope_data()
 
             if self.functional_test_results and self.selected_fms_id:
-                flow_test_entry = session.query(FMSFunctionalTests).filter_by(fms_id = self.selected_fms_id, test_id = self.test_id).first()
-                flow_check = session.query(FMSFunctionalTests).filter_by(fms_id = self.selected_fms_id).all()
-                if not flow_check:
-                    status_update = FMSProgressStatus.TESTING
-                else:
-                    status_update = None
-                try:
-                    date = datetime.strptime(self.test_id, "%Y_%m_%d_%H-%M-%S").date()
-                except Exception as e:
-                    print(f"Error parsing date: {str(e)}")
-                    date = datetime.now().date()
-                if flow_test_entry:
-                    flow_test_entry.test_type = type_map[self.test_type]
-                    flow_test_entry.inlet_pressure = self.inlet_pressure
-                    flow_test_entry.outlet_pressure = self.outlet_pressure
-                    flow_test_entry.temp_type = self.temp_type
-                    flow_test_entry.trp_temp = self.temperature
-                    flow_test_entry.remark = self.remark
-                    flow_test_entry.date = date
-                    flow_test_entry.gas_type = self.gas_type if self.gas_type else 'Xe'
-                    flow_test_entry.slope12 = self.flow_power_slope.get('slope12', None)
-                    flow_test_entry.slope24 = self.flow_power_slope.get('slope24', None)
-                    flow_test_entry.intercept12 = self.flow_power_slope.get('intercept12', None)
-                    flow_test_entry.intercept24 = self.flow_power_slope.get('intercept24', None)
-                    flow_test_entry.response_times = self.response_times
-                    flow_test_entry.response_regions = self.response_regions
-                    flow_test_entry.slope_correction = self.slope_correction
-                    fms_main: FMSMain = flow_test_entry.fms_main
-                    if status_update and fms_main:
-                        fms_main.status = status_update if not (fms_main.status == FMSProgressStatus.SHIPMENT or\
-                                                                 fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
-                else:
-                    flow_test_entry = FMSFunctionalTests(
-                        fms_id=self.selected_fms_id,
-                        test_id=self.test_id,
-                        test_type=type_map[self.test_type],
-                        inlet_pressure=self.inlet_pressure,
-                        outlet_pressure=self.outlet_pressure,
-                        temp_type=self.temp_type,
-                        trp_temp=self.temperature,
-                        gas_type=self.gas_type if self.gas_type else 'Xe',
-                        remark=self.remark,
-                        date=date,
-                        response_times=self.response_times,
-                        response_regions=self.response_regions,
-                        slope_correction=self.slope_correction,
-                        **self.flow_power_slope
-                    )
-                    session.add(flow_test_entry)
-                    session.flush()
-                    if status_update:
-                        fms_main = flow_test_entry.fms_main
-                        if fms_main:
-                            fms_main.status = status_update if not (fms_main.status == FMSProgressStatus.SHIPMENT or\
-                                                                     fms_main.status == FMSProgressStatus.DELIVERED or fms_main.status == FMSProgressStatus.SCRAPPED) else fms_main.status
-                session.commit()
-                # Update test results
-                characteristics = session.query(FMSFunctionalResults).filter_by(test_id=self.test_id).all()
-                if not characteristics:
-                    for row in self.functional_test_results:
-                        logtime = row.get('logtime', 0)
-                        for param, value in row.items():
-                            if param == 'logtime':
-                                continue
-                            if (isinstance(value, float) and np.isnan(value)) or str(value).lower() == "nan":
-                                continue
-                            flow_entry = FMSFunctionalResults(
-                                test_id=self.test_id,
-                                logtime=logtime,
-                                parameter_name=param,
-                                parameter_value=value,
-                                parameter_unit=self.units[param]
-                            )
-                            session.add(flow_entry)
-                    session.commit()
-                    self.check_test_status()
-                else:
-                    print("This test has already been registered in the database")
-                    return
-            # self.fms.print_table(FMSFunctionalTests)
+                self._update_or_create_functional_test(session)
+                self._update_functional_results(session)
+                self.check_test_status()
+            
         except Exception as e:
             print(f"Error adding fms test data: {str(e)}")
             if session:
                 session.rollback()
             traceback.print_exc()
+
+    def _get_session(self):
+        """Get database session, handling both callable and instance cases."""
+        try:
+            return self.Session()
+        except:
+            return self.Session
+
+
+    def _ensure_fms_main_entry_exists(self, session) -> None:
+        """Ensure FMS main entry exists in database, create if not."""
+        fms_entry = session.query(FMSMain).filter_by(fms_id=self.selected_fms_id).first()
+        
+        if not fms_entry:
+            self._create_new_fms_main_entry(session)
+
+
+    def _create_new_fms_main_entry(self, session) -> None:
+        """Create a new FMS main entry in the database."""
+        tv_check = session.query(TVStatus).filter_by(allocated=self.selected_fms_id).first()
+        max_id = session.query(func.max(FMSMain.id)).scalar() or 0
+        
+        new_fms = FMSMain(
+            fms_id=self.selected_fms_id,
+            model='FM',
+            status=FMSProgressStatus.TESTING,
+            drawing='20025.10.AF-R8',
+            gas_type=self.gas_type if self.gas_type else 'Xe',
+            id=max_id + 1
+        )
+        
+        if tv_check:
+            new_fms.tv_id = tv_check.tv_id
+        
+        session.add(new_fms)
+
+
+    def _prepare_flow_power_slope_data(self) -> None:
+        """Prepare flow power slope data by removing array fields."""
+        if self.flow_power_slope:
+            # Remove array fields that shouldn't be stored
+            self.flow_power_slope.pop('tv_power_12', None)
+            self.flow_power_slope.pop('tv_power_24', None)
+            self.flow_power_slope.pop('total_flows_12', None)
+            self.flow_power_slope.pop('total_flows_24', None)
+        else:
+            self.flow_power_slope = {}
+
+
+    def _update_or_create_functional_test(self, session: "Session") -> None:
+        """Update existing functional test entry or create new one."""
+        flow_test_entry = session.query(FMSFunctionalTests).filter_by(
+            fms_id=self.selected_fms_id, 
+            test_id=self.test_id
+        ).first()
+        
+        # Determine if status should be updated
+        flow_check = session.query(FMSFunctionalTests).filter_by(
+            fms_id=self.selected_fms_id
+        ).all()
+        status_update = FMSProgressStatus.TESTING if not flow_check else None
+        
+        # Parse test date
+        date = self._parse_test_date()
+        
+        if flow_test_entry:
+            self._update_existing_functional_test(flow_test_entry, date, status_update)
+        else:
+            self._create_new_functional_test(session, date, status_update)
+        
+        session.commit()
+
+
+    def _parse_test_date(self) -> datetime.date:
+        """Parse test date from test_id string."""
+        try:
+            return datetime.strptime(self.test_id, "%Y_%m_%d_%H-%M-%S").date()
+        except Exception as e:
+            print(f"Error parsing date: {str(e)}")
+            return datetime.now().date()
+
+
+    def _get_test_type_map(self) -> dict:
+        """Get mapping of test type strings to enum values."""
+        return {
+            'high_closed_loop': FunctionalTestType.HIGH_CLOSED_LOOP,
+            'high_open_loop': FunctionalTestType.HIGH_OPEN_LOOP,
+            'low_closed_loop': FunctionalTestType.LOW_CLOSED_LOOP,
+            'low_open_loop': FunctionalTestType.LOW_OPEN_LOOP,
+            'low_slope': FunctionalTestType.LOW_SLOPE,
+            'high_slope': FunctionalTestType.HIGH_SLOPE,
+        }
+
+
+    def _update_existing_functional_test(self, flow_test_entry: FMSFunctionalTests, 
+                                        date: datetime.date, status_update: FMSProgressStatus | None) -> None:
+        """Update an existing functional test entry with current data."""
+        type_map = self._get_test_type_map()
+        
+        flow_test_entry.test_type = type_map[self.test_type]
+        flow_test_entry.inlet_pressure = self.inlet_pressure
+        flow_test_entry.outlet_pressure = self.outlet_pressure
+        flow_test_entry.temp_type = self.temp_type
+        flow_test_entry.trp_temp = self.temperature
+        flow_test_entry.remark = self.remark
+        flow_test_entry.date = date
+        flow_test_entry.gas_type = self.gas_type if self.gas_type else 'Xe'
+        flow_test_entry.slope12 = self.flow_power_slope.get('slope12', None)
+        flow_test_entry.slope24 = self.flow_power_slope.get('slope24', None)
+        flow_test_entry.intercept12 = self.flow_power_slope.get('intercept12', None)
+        flow_test_entry.intercept24 = self.flow_power_slope.get('intercept24', None)
+        flow_test_entry.response_times = self.response_times
+        flow_test_entry.response_regions = self.response_regions
+        flow_test_entry.slope_correction = self.slope_correction
+        
+        # Update FMS main status if applicable
+        if status_update:
+            self._update_fms_main_status(flow_test_entry.fms_main, status_update)
+
+
+    def _create_new_functional_test(self, session: "Session", date: datetime.date, 
+                                    status_update: FMSProgressStatus | None) -> None:
+        """Create a new functional test entry."""
+        type_map = self._get_test_type_map()
+        
+        flow_test_entry = FMSFunctionalTests(
+            fms_id=self.selected_fms_id,
+            test_id=self.test_id,
+            test_type=type_map[self.test_type],
+            inlet_pressure=self.inlet_pressure,
+            outlet_pressure=self.outlet_pressure,
+            temp_type=self.temp_type,
+            trp_temp=self.temperature,
+            gas_type=self.gas_type if self.gas_type else 'Xe',
+            remark=self.remark,
+            date=date,
+            response_times=self.response_times,
+            response_regions=self.response_regions,
+            slope_correction=self.slope_correction,
+            **self.flow_power_slope
+        )
+        
+        session.add(flow_test_entry)
+        session.flush()
+        
+        # Update FMS main status if applicable
+        if status_update:
+            self._update_fms_main_status(flow_test_entry.fms_main, status_update)
+
+
+    def _update_fms_main_status(self, fms_main: FMSMain | None, 
+                                status_update: FMSProgressStatus) -> None:
+        """Update FMS main status if not in terminal state."""
+        if not fms_main:
+            return
+        
+        # Don't update if in terminal states
+        terminal_states = {
+            FMSProgressStatus.SHIPMENT,
+            FMSProgressStatus.DELIVERED,
+            FMSProgressStatus.SCRAPPED
+        }
+        
+        if fms_main.status not in terminal_states:
+            fms_main.status = status_update
+
+
+    def _update_functional_results(self, session: "Session") -> None:
+        """Update detailed functional test results in database."""
+        # Check if results already exist
+        characteristics = session.query(FMSFunctionalResults).filter_by(
+            test_id=self.test_id
+        ).all()
+        
+        if characteristics:
+            print("This test has already been registered in the database")
+            return
+        
+        # Insert new results
+        self._insert_functional_results(session)
+        session.commit()
+
+
+    def _insert_functional_results(self, session: "Session") -> None:
+        """Insert functional test results row by row into database."""
+        for row in self.functional_test_results:
+            logtime = row.get('logtime', 0)
+            
+            for param, value in row.items():
+                if param == 'logtime':
+                    continue
+
+                if self._is_nan_value(value):
+                    continue
+                
+                flow_entry = FMSFunctionalResults(
+                    test_id=self.test_id,
+                    logtime=logtime,
+                    parameter_name=param,
+                    parameter_value=value,
+                    parameter_unit=self.units[param]
+                )
+                session.add(flow_entry)
+
+
+    def _is_nan_value(self, value) -> bool:
+        """Check if value is NaN (float NaN or string 'nan')."""
+        if isinstance(value, float) and np.isnan(value):
+            return True
+        if str(value).lower() == "nan":
+            return True
+        return False
 
     def check_test_status(self) -> None:
         """
@@ -2389,17 +2464,6 @@ class FMSLogicSQL(FMSData, FMSListener):
             fms_data (FMS_data): FMS data class instance containing FR characterization test results.
         """
         session = None
-        if fms_data:
-            self.inlet_pressure = fms_data.inlet_pressure
-            self.outlet_pressure = fms_data.outlet_pressure
-            self.temp_type = fms_data.temperature_type
-            self.temperature = fms_data.temperature
-            self.units = fms_data.units
-            self.test_type = fms_data.test_type
-            self.test_id = fms_data.test_id
-            self.gas_type = fms_data.gas_type
-            self.remark = 'Automated entry'
-            self.functional_test_results = fms_data.functional_test_results
         try:
             try:
                 session = self.Session()
@@ -2440,7 +2504,7 @@ class FMSLogicSQL(FMSData, FMSListener):
                 fr_entry = FMSFRTests(**update_dict, gas_type = self.gas_type if self.gas_type else 'Xe', fms_id=self.selected_fms_id,\
                                         inlet_pressure=self.inlet_pressure,
                                         outlet_pressure=self.outlet_pressure, test_id=self.test_id, trp_temp = self.temperature,
-                                        date=date, remark=self.remark)
+                                        date=date)
                 session.add(fr_entry)
 
                 session.commit()
