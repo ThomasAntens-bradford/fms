@@ -1,0 +1,249 @@
+    def fms_assembly_input_field(self) -> None:
+        """
+        Creates an input form for FMS assembly with:
+        - FMS ID (ComboBox)
+        - Manifold Set ID (ComboBox)
+        - HPIV ID (ComboBox)
+        - TV ID (ComboBox)
+        - Gas Type (Dropdown)
+        - Drawing Ref (Text)
+        - Model Type (ToggleButtons)
+        All fields in a neat grid layout, with error handling for drawing.
+        """
+        label_width = '160px'
+        field_width = '300px'
+
+        def field(description):
+            return dict(
+                description=description,
+                layout=widgets.Layout(width=field_width),
+                style={'description_width': label_width}
+            )
+
+        # --- Preload options for ComboBoxes ---
+        try:
+            session: "Session" = self.Session()
+            manifold_ids = [str(m.set_id) for m in session.query(ManifoldStatus).filter(ManifoldStatus.set_id != None, ManifoldStatus.allocated == None).all()]
+            hpiv_ids = [h.hpiv_id for h in session.query(HPIVCertification).filter(HPIVCertification.hpiv_id != None, HPIVCertification.allocated == None).all()]
+            tv_ids = [str(t.tv_id) for t in session.query(TVStatus).filter(TVStatus.tv_id != None, TVStatus.allocated == None).all()]
+            last_fms = session.query(FMSMain).order_by(FMSMain.id.desc()).first()
+            if last_fms and last_fms.fms_id:
+                last_part = int(last_fms.fms_id.split("-")[-1])
+                first_part = "-".join(last_fms.fms_id.split("-")[:-1])
+                new_fms_id = f"{str(first_part)}-{str(last_part + 1).zfill(3)}"
+            else:
+                new_fms_id = "25-001"
+        except Exception:
+            traceback.print_exc()
+            manifold_ids = []
+            hpiv_ids = []
+            tv_ids = []
+            new_fms_id = "25-001"
+
+        title = widgets.HTML("<h3>FMS Assembly Form</h3>")
+        # --- Widgets ---
+        fms_widget = widgets.Combobox(
+            **field("FMS ID:"),
+            value=new_fms_id
+        )
+        manifold_widget = widgets.Combobox(
+            **field("Manifold Set ID:"),
+            options=manifold_ids,
+            placeholder="Select or Type ..."
+        )
+        hpiv_widget = widgets.Combobox(
+            **field("HPIV ID:"),
+            options=hpiv_ids,
+            placeholder="Select or Type ..."
+        )
+        tv_widget = widgets.Combobox(
+            **field("TV ID:"),
+            options=tv_ids,
+            placeholder="Select or Type ..."
+        )
+
+        gas_type_widget = widgets.Dropdown(
+            options=['Xe', 'Kr'],
+            value='Xe',
+            description='Gas type:',
+            style={'description_width': label_width},
+            layout=widgets.Layout(width=field_width, height='50px')
+        )
+
+        drawing_widget = widgets.Text(
+            **field("Drawing Ref:"),
+            value='20025.10.AF-R8',
+            placeholder="Enter drawing reference"
+        )
+        model_widget = widgets.ToggleButtons(
+            description='Model Type:',
+            options=['FM', 'EM', 'QM', 'EQM'],
+            style={'description_width': label_width},
+            layout=widgets.Layout(width='220px'),
+            value='FM'
+        )
+
+        submit_button = widgets.Button(
+            description="Submit",
+            button_style="success",
+            layout=widgets.Layout(width='120px')
+        )
+        output = widgets.Output()
+
+        confirmed_once = {'clicked': False}
+        submitted = {'done': False}
+        DRAFT_NAME = 'fms_assembly_draft'
+
+        try:
+            draft = load_from_json(DRAFT_NAME)  
+            if draft:
+                fms_widget.value = draft.get('fms_id', new_fms_id)
+                manifold_widget.value = draft.get('manifold_id', '')
+                hpiv_widget.value = draft.get('hpiv_id', '')
+                tv_widget.value = draft.get('tv_id', '')
+                drawing_widget.value = draft.get('drawing', '20025.10.AF-R8')
+                model_widget.value = draft.get('model', 'FM')
+                gas_type_widget.value = draft.get('gas_type', 'Xe')
+        except Exception:
+            pass
+
+        def save_fms_form_data(change: "widgets.Widget" = None) -> None:
+            form = {
+                'fms_id': fms_widget.value,
+                'manifold_id': manifold_widget.value,
+                'hpiv_id': hpiv_widget.value,
+                'tv_id': tv_widget.value,
+                'drawing': drawing_widget.value,
+                'model': model_widget.value,
+                'gas_type': gas_type_widget.value
+            }
+            save_to_json(form, DRAFT_NAME)
+            submitted['done'] = False
+            confirmed_once['clicked'] = False
+
+        for w in [fms_widget, manifold_widget, hpiv_widget, tv_widget, drawing_widget, model_widget]:
+            w.observe(save_fms_form_data, names='value')
+
+        # --- Submit handler ---
+        def on_submit_clicked(b):
+            with output:
+                output.clear_output()
+                if submitted['done']:
+                    print("Already Submitted")
+                    return
+
+                # Validate required fields
+                required = [
+                    (fms_widget, "FMS ID"),
+                    (manifold_widget, "Manifold Set ID"),
+                    (hpiv_widget, "HPIV ID"),
+                    (tv_widget, "TV ID"),
+                    (drawing_widget, "Drawing Ref"),
+                    (model_widget, "Model Type"),
+                ]
+                for widget, label in required:
+                    if not widget.value:
+                        print(f"Please enter/select a {label}.")
+                        return
+
+                if not confirmed_once['clicked']:
+                    confirmed_once['clicked'] = True
+                    print("Click submit again to confirm.")
+                    return
+
+                # Validate formats
+                hpiv_pattern = r"^VS197-(\d{3})$"
+                fms_pattern = r"^\d{2}-\d{3}$"
+                drawing_pattern = r"^\d{5}\.\d{2}\.\w{2}-R\d$"
+                try:
+                    fms_id = fms_widget.value.strip()
+                    manifold_set_id = manifold_widget.value
+                    hpiv_id = hpiv_widget.value.strip()
+                    tv_id = tv_widget.value.strip()
+                    drawing = drawing_widget.value.strip()
+                    model = model_widget.value
+                    gas_type = gas_type_widget.value
+                except Exception:
+                    print("Invalid input. Please check all fields.")
+                    return
+
+                if not re.match(hpiv_pattern, hpiv_id):
+                    print("Invalid HPIV ID format. Use 'VS197-XXX'.")
+                    return
+                if not re.match(fms_pattern, fms_id):
+                    print("Invalid FMS ID format. Use 'XX-XXX' (2 digits)-(3 digits).")
+                    return
+                if not drawing:
+                    print("Drawing reference cannot be empty.")
+                    return
+                if not re.match(drawing_pattern, drawing):
+                    print("Invalid drawing reference format. Use 'XXXXX.XX.AA-AX'.")
+                    return
+
+                # Lookup FR and LPT IDs
+                try:
+                    manifold = session.query(ManifoldStatus).filter_by(set_id=manifold_set_id).first()
+                    anode_fr_id = manifold.anode.fr_id if manifold and manifold.anode else None
+                    cathode_fr_id = manifold.cathode.fr_id if manifold and manifold.cathode else None
+                    lpt_id = manifold.lpt.fr_id if manifold and manifold.lpt else None
+                except Exception:
+                    anode_fr_id = cathode_fr_id = lpt_id = None
+
+                fms_check = session.query(FMSMain).filter_by(fms_id = fms_id).first()
+                if fms_check:
+                    print("This FMS has already been assembled.")
+                    return
+
+                # Check allocation for each component (manifold, tv, hpiv) in a loop
+                component_fields = [
+                    ('manifold_id', manifold_set_id, 'Manifold Set'),
+                    ('tv_id', tv_id, 'TV'),
+                    ('hpiv_id', hpiv_id, 'HPIV'),
+                ]
+                for field, value, label in component_fields:
+                    if not value:
+                        continue
+                    check_fms = session.query(FMSMain).filter_by(**{field: value}).first()
+                    if check_fms:
+                        print(f"This {label} has already been allocated to FMS with ID: {check_fms.fms_id}")
+                        return
+
+                self.assembly_data = {
+                    'fms_id': fms_id,
+                    'manifold_id': int(manifold_set_id),
+                    'hpiv_id': hpiv_id,
+                    'tv_id': int(tv_id),
+                    'anode_fr_id': anode_fr_id,
+                    'cathode_fr_id': cathode_fr_id,
+                    'lpt_id': lpt_id,
+                    'drawing': drawing,
+                    'model': model,
+                    'gas_type': gas_type
+                }
+                self.add_fms_assembly_data()
+                confirmed_once['clicked'] = False
+                submitted['done'] = True
+
+                delete_json_file(DRAFT_NAME)
+
+        submit_button.on_click(on_submit_clicked)
+
+        # --- Display form in a grid ---
+        grid = widgets.GridBox(
+            [
+                fms_widget, manifold_widget,
+                hpiv_widget, tv_widget,
+                drawing_widget, model_widget,
+                gas_type_widget
+            ],
+            layout=widgets.Layout(
+                grid_template_columns="repeat(2, 320px)",
+                grid_gap="12px 24px",
+                border='1px solid #ccc',
+                padding='18px',
+                width='fit-content',
+                background_color="#f9f9f9"
+            )
+        )
+        display(widgets.VBox([title, grid]))
+        display(submit_button, output)
