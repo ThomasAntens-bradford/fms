@@ -2053,7 +2053,7 @@ class FMSData:
 
         return serials
     
-class FMSLogicSQL:
+class FMSLogicSQL(FMSData, FMSListener):
     """
     Base class for FMS SQL logic operations.
 
@@ -2128,17 +2128,10 @@ class FMSLogicSQL:
     """
 
     def __init__(self, session: "Session", fms: "FMSDataStructure"):
+        super().__init__()
         self.Session = session
         self.fms = fms
-        self.fr_test_results = {}
-        self.assembly_data = {}
-        self.gas_type = None
-        self.flow_power_slope = {}
-        self.remark = None
-        self.fms_query = None
-        self.component_serials = {}
-        self.selected_fms_id = None
-        self.test_type = None
+        self.fms_id = None
 
     def listen_to_fms_main_results(self, data_folder: str = 'FMS_data') -> None:
         """

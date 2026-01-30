@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, JSON, ForeignKey, Float, Enum, DateTime
+from sqlalchemy import Column, Integer, String, JSON, ForeignKey, Float, Enum, DateTime, Boolean
 from ..utils.enums import FunctionalTestType
 from sqlalchemy.orm import relationship
 from .base import Base
@@ -42,6 +42,12 @@ class FMSFunctionalTests(Base):
         Intercept of the TV flow between 2 and 4 mg/s flow rate.
     response_times : JSON
         Dictionary storing response times for the different pressure set points.
+    response_regions : JSON
+        Dictionary storing the regions that cover the LPT set points and actual time that the flow reaches the set point.
+    slope_correction : Float
+        The factor that is calculated based on how far off the inlet pressure is from the reference inlet pressure.
+    pre_vibration : Boolean
+        Indicates whether the test has been performed before or after vibration.
 
     Relationships
     -------------
@@ -70,6 +76,7 @@ class FMSFunctionalTests(Base):
     response_times = Column(JSON, nullable=True)
     response_regions = Column(JSON, nullable=True)
     slope_correction = Column(Float, nullable=True)
+    pre_vibration = Column(Boolean, nullable=True)
 
     fms_main = relationship("FMSMain", back_populates="functional_tests")
     functional_results = relationship("FMSFunctionalResults", back_populates="main_tests")
